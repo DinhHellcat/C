@@ -1,0 +1,2 @@
+D:\Learn\App\TMDGCC\bin\ar.exe qc liberrors.a CMakeFiles/errors.dir/errors.cpp.obj
+D:\Learn\App\TMDGCC\bin\ranlib.exe liberrors.a

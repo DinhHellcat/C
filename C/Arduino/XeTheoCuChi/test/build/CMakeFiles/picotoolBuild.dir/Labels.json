@@ -1,0 +1,46 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/CMakeFiles/picotoolBuild"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/CMakeFiles/picotoolBuild.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/CMakeFiles/picotoolBuild-complete.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-build.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-configure.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-download.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-install.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-mkdir.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-patch.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-test.rule"
+		},
+		{
+			"file" : "D:/Learn/C/C/Arduino/XeTheoCuChi/test/build/picotool/src/picotoolBuild-stamp/picotoolBuild-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"picotoolBuild"
+		],
+		"name" : "picotoolBuild"
+	}
+}

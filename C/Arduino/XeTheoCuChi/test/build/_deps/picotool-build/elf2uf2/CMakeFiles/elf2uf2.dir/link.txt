@@ -1,0 +1,2 @@
+D:\Learn\App\TMDGCC\bin\ar.exe qc libelf2uf2.a CMakeFiles/elf2uf2.dir/elf2uf2.cpp.obj
+D:\Learn\App\TMDGCC\bin\ranlib.exe libelf2uf2.a
