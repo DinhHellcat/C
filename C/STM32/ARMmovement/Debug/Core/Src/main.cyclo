@@ -1,0 +1,15 @@
+../Core/Src/main.c:8:5:main	1
+../Core/Src/main.c:54:6:SystemClock_Config	3
+../Core/Src/main.c:96:13:MX_TIM1_Init	8
+../Core/Src/main.c:175:13:MX_GPIO_Init	1
+../Core/Src/main.c:210:6:setMotor	1
+../Core/Src/main.c:223:6:hardRight	1
+../Core/Src/main.c:228:6:hardLeft	1
+../Core/Src/main.c:233:6:shapeRight	1
+../Core/Src/main.c:238:6:shapeLeft	1
+../Core/Src/main.c:243:6:turnRight	1
+../Core/Src/main.c:248:6:turnLeft	1
+../Core/Src/main.c:253:6:forward	1
+../Core/Src/main.c:258:6:backward	1
+../Core/Src/main.c:263:6:stop	1
+../Core/Src/main.c:268:6:Error_Handler	1

@@ -1,0 +1,7 @@
+12:32:02 **** Incremental Build of configuration Debug for project ARMmovement ****
+make -j12 all 
+arm-none-eabi-size  ARMmovement.elf 
+   text	   data	    bss	    dec	    hex	filename
+  10400	     12	   1644	  12056	   2f18	ARMmovement.elf
+Finished building: default.size.stdout
+ 

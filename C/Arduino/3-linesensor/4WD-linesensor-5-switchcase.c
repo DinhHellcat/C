@@ -80,7 +80,7 @@ void loop() {
             forward();
             delay(200);
             hardRight();
-            temp = 11;
+            temp = 1;
             break;
         case 0b10000:
         case 0b10010:
