@@ -3,6 +3,8 @@
 	<item key="hasShownOverlayPopupBefore" value="true"/>
 	<item key="replaceBarOpen" value="false"/>
 	<list key="searchhistory">
+		<item value="temp"/>
+		<item value="clear"/>
 		<item value="TIM_Base_SetConfig"/>
 		<item value="HAL_TIM_PWM_Start"/>
 	</list>
