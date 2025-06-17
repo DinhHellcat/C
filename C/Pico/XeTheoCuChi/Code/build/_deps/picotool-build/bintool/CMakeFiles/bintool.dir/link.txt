@@ -1,0 +1,2 @@
+D:\Learn\App\TMDGCC\bin\ar.exe qc libbintool.a CMakeFiles/bintool.dir/bintool.cpp.obj
+D:\Learn\App\TMDGCC\bin\ranlib.exe libbintool.a

@@ -22,8 +22,6 @@ int speed = half_speed;
 bool driving_speed = false;
 
 void setMotor(int ls, int rs) {
-  ls = -ls;
-  rs = -rs;
   if (ls >= 0) {
     pwm.setPin(LF, ls);
     pwm.setPin(LI, 0);

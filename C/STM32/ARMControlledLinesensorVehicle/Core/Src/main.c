@@ -52,8 +52,7 @@ int main(void)
   {
 	  if (mode == 1) // AUTONOMOUS mode
 	  {
-		  if(temp == 0)
-              HAL_GPIO_WritePin(LEDPort, LED1, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(LEDPort, LED1, GPIO_PIN_RESET);
 		  //HAL_Delay(Delay);
 		  int sensors[5];
 		  sensors[0] = HAL_GPIO_ReadPin(lineSensorPort, D1);
@@ -70,6 +69,8 @@ int main(void)
 		  	  case 0b11111:
 	              stop();
 	              HAL_Delay(Delay);
+	              backward();
+	              HAL_Delay(Delay);
 		  		  if(temp == -1)
 		  		  {
 		  			  shapeLeft();
@@ -80,35 +81,48 @@ int main(void)
 		  			  shapeRight();
 		  			  while (HAL_GPIO_ReadPin(lineSensorPort, D5) == GPIO_PIN_SET && mode == 1) HAL_Delay(10);
 		  		  }
+		  		  stop();
+	              HAL_Delay(Delay);
+	              forward();
 		  		  break;
+		  	  case 0b11011:
 		  	  case 0b10011:
+		  	  case 0b11001:
+		  		  forward();
+		  		  break;
 		  	  case 0b10111:
 		  		  turnLeft();
-		  		  temp = -1;
 		  		  break;
-		  	  case 0b11001:
 		  	  case 0b11101:
 		  		  turnRight();
+		  		  break;
+		  	  case 0b00111:
+		  		  hardLeft();
+		  		  temp = -1;
+		  		  break;
+		  	  case 0b11100:
+		  		  hardRight();
 		  		  temp = 1;
 		  		  break;
 		  	  case 0b00011:
-		  	  case 0b00111:
 		  	  case 0b01111:
-		  		  hardLeft(); //HAL_Delay(Delay);
+		  		  shapeLeft();
+		  		  HAL_Delay(Delay);
 		  		  temp = -1;
 		  		  break;
 		  	  case 0b11000:
-		  	  case 0b11100:
 		  	  case 0b11110:
-		  		  hardRight(); //HAL_Delay(Delay);
+		  		  shapeRight();
+		  		  HAL_Delay(Delay);
 		  		  temp = 1;
 		  		  break;
 			  default: //11011
 				  forward();
-	              HAL_GPIO_WritePin(LEDPort, LED1, GPIO_PIN_SET);
 				  break;
 		  }
 	  }
+	  else
+          HAL_GPIO_WritePin(LEDPort, LED1, GPIO_PIN_SET);
 	  // In MANUAL mode, do nothing; control is handled by UART interrupt
   }
 }
@@ -122,7 +136,7 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart4)
             case 'S':
             case 'L':
             case 'R':// Resume autonomous mode
-                mode = 0;
+                mode = 1;
 		  		stop(); // Stop motors before resuming line-following
                 HAL_GPIO_WritePin(LEDPort, LED1, GPIO_PIN_SET);
                 HAL_GPIO_WritePin(LEDPort, LED2, GPIO_PIN_SET);
@@ -365,22 +379,22 @@ void stop()
 
 void turnRight()
 {
-    setMotor(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, maxSpeed, maxSpeed - halfSpeed);
+    setMotor(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, maxSpeed, halfSpeed);
 }
 
 void turnLeft()
 {
-    setMotor(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, maxSpeed - halfSpeed, maxSpeed);
+    setMotor(GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, halfSpeed, maxSpeed);
 }
 
 void backRight()
 {
-    setMotor(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, maxSpeed, maxSpeed - halfSpeed);
+    setMotor(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, maxSpeed, halfSpeed);
 }
 
 void backLeft()
 {
-    setMotor(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, maxSpeed - halfSpeed, maxSpeed);
+    setMotor(GPIO_PIN_RESET, GPIO_PIN_SET, GPIO_PIN_RESET, GPIO_PIN_SET, halfSpeed, maxSpeed);
 }
 
 void hardBackRight()

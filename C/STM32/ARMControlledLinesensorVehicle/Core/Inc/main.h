@@ -28,7 +28,7 @@ void Error_Handler(void);
 #define RW_EN GPIO_PIN_9
 
 #define maxSpeed 45000
-#define halfSpeed 22500
+#define halfSpeed 30000
 #define minSpeed 0
 
 #define LEDPort GPIOA

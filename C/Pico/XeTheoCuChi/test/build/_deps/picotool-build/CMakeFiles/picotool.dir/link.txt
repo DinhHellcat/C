@@ -1,3 +1,0 @@
-"C:\Program Files\CMake\bin\cmake.exe" -E rm -f CMakeFiles\picotool.dir/objects.a
-D:\Learn\App\TMDGCC\bin\ar.exe qc CMakeFiles\picotool.dir/objects.a @CMakeFiles\picotool.dir\objects1.rsp
-D:\Learn\App\TMDGCC\bin\c++.exe -O3 -DNDEBUG -Wl,--whole-archive CMakeFiles\picotool.dir/objects.a -Wl,--no-whole-archive -o picotool.exe -Wl,--out-implib,libpicotool.dll.a -Wl,--major-image-version,0,--minor-image-version,0 @CMakeFiles\picotool.dir\linkLibs.rsp

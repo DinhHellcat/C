@@ -1,0 +1,53 @@
+=== vector ===
+vector<int> v
+v[i]
+front()
+back()
+
+push_back(x)
+pop_back()
+insert()
+erase()
+
+size()
+empty()
+sort()
+
+=== set ===
+insert()
+erase()
+find()
+
+lower_bound()
+upper_bound()
+auto range = a.equal_range(x)
+    *range.first  //upper_bound
+    *range.second //lower_bound
+
+size()
+empty()
+
+=== stack ===
+push()
+pop()
+top()
+
+size()
+empty()
+
+=== string ===
+size() | length()
+empty()
+
+s[i] | s.at(i)
+front()
+back()
+
++=
+append()
+push_back()
+pop_back()
+insert()
+erase()
+
+compare()

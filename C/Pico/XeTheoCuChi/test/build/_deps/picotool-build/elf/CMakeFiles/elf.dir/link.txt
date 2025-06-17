@@ -1,2 +1,0 @@
-D:\Learn\App\TMDGCC\bin\ar.exe qc libelf.a CMakeFiles/elf.dir/elf_file.cpp.obj
-D:\Learn\App\TMDGCC\bin\ranlib.exe libelf.a

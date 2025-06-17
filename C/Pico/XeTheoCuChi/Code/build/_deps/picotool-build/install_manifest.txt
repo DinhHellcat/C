@@ -1,0 +1,6 @@
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/picotool.exe
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/picotoolTargets.cmake
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/picotoolTargets-release.cmake
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/picotoolConfig.cmake
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/picotoolConfigVersion.cmake
+D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool/enc_bootloader.elf

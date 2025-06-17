@@ -1,1 +1,0 @@
- bintool/libbintool.a elf2uf2/libelf2uf2.a errors/liberrors.a elf/libelf.a errors/liberrors.a -lkernel32 -luser32 -lgdi32 -lwinspool -lshell32 -lole32 -loleaut32 -luuid -lcomdlg32 -ladvapi32 

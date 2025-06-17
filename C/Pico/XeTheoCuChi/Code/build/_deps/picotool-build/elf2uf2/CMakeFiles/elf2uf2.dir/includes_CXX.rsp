@@ -1,0 +1,1 @@
+-I"D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool-src/elf2uf2" -I"D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool-src/elf" -I"D:/Learn/C/C/Pico/XeTheoCuChi/Code/build/_deps/picotool-src/errors" -isystem "D:/Learn/C/C/pico-sdk/src/common/boot_uf2_headers/include"
