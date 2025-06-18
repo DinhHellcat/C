@@ -13,6 +13,7 @@ size()
 empty()
 sort()
 
+find(v.begin(),v.end(),x);
 === set ===
 insert()
 erase()
@@ -27,6 +28,7 @@ auto range = a.equal_range(x)
 size()
 empty()
 
+*prev(a.end())
 === stack ===
 push()
 pop()
@@ -51,3 +53,26 @@ insert()
 erase()
 
 compare()
+
+stoi(s,0,hệ cơ số)
+
+
+đọc file không có index:
+```
+string t;
+set<int> a,b,c;
+if(getline(cin,t))
+{
+    istringstream iss(t);
+    int x;
+    while(iss>>x) a.insert(x);
+}
+```
+```
+while(cin>>x)
+    temp.push_back(x);
+```
+
+maybe need:
+std::ios_base::sync_with_stdio(false);
+std::cin.tie(NULL);
