@@ -1,5 +1,5 @@
 === vector ===
-vector<int> v
+vector<int> v;
 v[i]
 front()
 back()
@@ -76,3 +76,26 @@ while(cin>>x)
 maybe need:
 std::ios_base::sync_with_stdio(false);
 std::cin.tie(NULL);
+
+=== map ===
+Khai báo:
+map<int,int> c;
+map<string,int> c;
+
+In:
+for(auto i:c)
+    cout<<c.first<<" "<<c.second;
+
+Số pi: 355/113
+
+=== Prime ===
+int check(long long n)
+{
+    if(n<2) return 0;
+    if(n==2 || n==3) return 1;
+    if(n%2==0 || n%3==0) return 0;
+    for(long long i=5;i*i<=n;i+=6)
+        if(n%i==0 || n%(i+2)==0)
+            return 0;
+    return 1;
+}
