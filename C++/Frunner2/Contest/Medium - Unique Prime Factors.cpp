@@ -1,0 +1,35 @@
+#include<bits/stdc++.h>
+using namespace std;
+set<int> a;
+int check(long long n)
+{
+    if(n<2) return 0;
+    if(n==2 || n==3) return 1;
+    if(n%2==0 || n%3==0) return 0;
+    for(long long i=5;i*i<=n;i+=6)
+        if(n%i==0 || n%(i+2)==0)
+            return 0;
+    return 1;
+}
+void compile()
+{
+    for(int i=0;i<100001;i++)
+        if(check(i))
+            a.insert(i);
+}
+int main()
+{
+    compile();
+    int n;
+    cin>>n;
+    set<int> x;
+    for(int i:a)
+        if(n%i==0)
+        {
+            x.insert(i);
+            while(n%i==0)
+                n/=i;
+        }
+    for(int i:x)
+        cout<<i<<" ";
+}

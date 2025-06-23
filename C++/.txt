@@ -1,94 +1,29 @@
-=== vector ===
-vector<int> v;
-v[i]
-front()
-back()
-
-push_back(x)
-pop_back()
-insert()
-erase()
-
-size()
-empty()
-sort()
-
-find(v.begin(),v.end(),x);
-=== set ===
-insert()
-erase()
-find()
-
-lower_bound()
-upper_bound()
-auto range = a.equal_range(x)
-    *range.first  //upper_bound
-    *range.second //lower_bound
-
-size()
-empty()
-
-*prev(a.end())
-=== stack ===
-push()
-pop()
-top()
-
-size()
-empty()
-
-=== string ===
-size() | length()
-empty()
-
-s[i] | s.at(i)
-front()
-back()
-
-+=
-append()
-push_back()
-pop_back()
-insert()
-erase()
-
-compare()
-
-stoi(s,0,hệ cơ số)
-
-
+======
 đọc file không có index:
-```
-string t;
-set<int> a,b,c;
-if(getline(cin,t))
-{
-    istringstream iss(t);
-    int x;
-    while(iss>>x) a.insert(x);
-}
-```
-```
-while(cin>>x)
-    temp.push_back(x);
-```
-
-maybe need:
+````````````````````````````````````````````````````
+string t;                       | while(cin>>x)
+set<int> a;                     |    temp.push_back(x);
+if(getline(cin,t))              |
+{                               |
+    istringstream iss(t);       |
+    int x;                      |
+    while(iss>>x) a.insert(x);  |
+}                               |
+````````````````````````````````````````````````````
+tăng tốc độ đọc file(không cần lắm)
 std::ios_base::sync_with_stdio(false);
 std::cin.tie(NULL);
 
-=== map ===
-Khai báo:
-map<int,int> c;
-map<string,int> c;
-
-In:
-for(auto i:c)
-    cout<<c.first<<" "<<c.second;
-
 Số pi: 355/113
 
-=== Prime ===
+đổi số về hệ số 2:
+string binary = bitset<8>(2).to_string();
+đổi về cơ số 10 từ string:
+stoi=(binary,0,2);
+stoi=(octal,0,8);
+stoi=(hex,0,16);
+
+prime check:
 int check(long long n)
 {
     if(n<2) return 0;
@@ -99,3 +34,80 @@ int check(long long n)
             return 0;
     return 1;
 }
+sqrt(int)|cbrt(int)
+
+floor(x)|round(x)|cell(x);
+======
+STRING
+======
+s.length()          | s[i]
+s.empty()           | s.at(i)
+
+s.front()           | s.erase()
+s.back()            | s.compare(string) >,=,<
+
+s.append(string)    | s.push_back(char)
+s+=string           | s.pop_back()
+
+reverse();
+======
+VECTOR
+======
+vector<int> v(n);
+vector<vector<int>> v(n,vector<int>(n));
+
+v.front()           | v.begin()
+v.back()            | v.end()
+
+v.push_back(x)      | v.size()
+v.pop_back()        | v.empty()
+v.erase(&)          | v.distance(v.begin(),*x)
+
+v.sort(v.begin(),v.end());
+auto t = find(v.begin(),v.end(),x);
+
+======
+SET
+======
+set<int> a;
+
+a.insert()          | a.erase(i)
+a.size()
+a.empty()
+
+find(a.begin(),a.end(),x);
+
+auto it = s.lower_bound(x) >=
+auto it = s.upper_bound(x) <=
+auto range = a.equal_range(x)
+    *range.first  //upper_bound
+    *range.second //lower_bound
+
+*a.begin()|*prev(a.end())
+
+======
+STACK
+======
+stack<int> st;
+
+st.push()   |st.pop()   |st.top()
+
+st.size()   | st.empty()
+
+======
+MAP
+======
+map<int,int> c;
+map<string,int> c;
+map<int, vector<int>> a;
+
+for(auto i:c)
+    cout<<c.first<<" "<<c.second;
+
+======
+Kiểu dữ liệu
+======
+int +- 2.1 x 10^9
+long +- 9 x 10^18
+float 3.4 x 10^38   ~6-7
+double 1.7 x 10^308 ~15-16
