@@ -1,16 +1,14 @@
-#include<bits/stdc++.h>
-using namespace std;
-int main()
-{
-    int n,W;
-    cin>>n>>W;
-    vector<int> value(n),weight(n);
-    for(int i=0;i<n;i++)
-        cin>>value[i]>>weight[i];
+#include <vector>
+#include <algorithm>
 
-    vector<int> dp(W+1,0);
-    for(int i=0;i<n;i++)
-        for(int j=W;j>=weight[i];j--)
-            dp[j]=max(dp[j],value[i]+dp[j-weight[i]]);
-    cout<<dp[W];
-}
+class Solution {
+public:
+    int findPoisonedDuration(vector<int>& timeSeries, int duration) {
+        if(timeSeries.empty())
+            return 0;
+        int total=duration;
+        for(int i=0;i<timeSeries.size()-1;i++)
+            total+=min(duration,timeSeries[i+1]-timeSeries[i]);
+        return total;
+    }
+};

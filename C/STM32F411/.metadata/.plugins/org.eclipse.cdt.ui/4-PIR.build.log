@@ -1,0 +1,10 @@
+10:42:19 **** Incremental Build of configuration Debug for project 4-PIR ****
+make -j12 all 
+arm-none-eabi-size  4-PIR.elf 
+   text	   data	    bss	    dec	    hex	filename
+   6056	     12	   1572	   7640	   1dd8	4-PIR.elf
+Finished building: default.size.stdout
+ 
+
+10:42:19 Build Finished. 0 errors, 0 warnings. (took 223ms)
+

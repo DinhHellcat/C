@@ -1,0 +1,10 @@
+21:49:04 **** Incremental Build of configuration Debug for project 7.2-Combine_test_with interupt ****
+make -j12 all 
+arm-none-eabi-size  7.2-Combine_test_with\ interupt.elf 
+   text	   data	    bss	    dec	    hex	filename
+  35244	    468	   2412	  38124	   94ec	7.2-Combine_test_with interupt.elf
+Finished building: default.size.stdout
+ 
+
+21:49:04 Build Finished. 0 errors, 0 warnings. (took 560ms)
+

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<section name="Workbench">
+	<item key="hasShownOverlayPopupBefore" value="true"/>
+	<item key="replaceBarOpen" value="false"/>
+	<list key="searchhistory">
+		<item value="HAL_ADC_Start(&amp;hadc1);"/>
+		<item value="/* USER CODE BEGIN 4 */"/>
+		<item value="MX_TIM2_Init"/>
+		<item value="MX_ADC1_Init"/>
+		<item value="HSE"/>
+	</list>
+</section>

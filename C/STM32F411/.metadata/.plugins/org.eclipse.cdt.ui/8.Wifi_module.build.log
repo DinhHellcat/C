@@ -1,0 +1,10 @@
+17:46:41 **** Incremental Build of configuration Debug for project 8.Wifi_module ****
+make -j12 all 
+arm-none-eabi-size  8.Wifi_module.elf 
+   text	   data	    bss	    dec	    hex	filename
+  21004	    104	   2320	  23428	   5b84	8.Wifi_module.elf
+Finished building: default.size.stdout
+ 
+
+17:46:41 Build Finished. 0 errors, 0 warnings. (took 512ms)
+

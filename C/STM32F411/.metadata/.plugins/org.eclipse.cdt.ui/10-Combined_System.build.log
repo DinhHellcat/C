@@ -1,0 +1,10 @@
+01:12:41 **** Incremental Build of configuration Debug for project 10-Combined_System ****
+make -j12 all 
+arm-none-eabi-size  10-Combined_System.elf 
+   text	   data	    bss	    dec	    hex	filename
+  38812	    468	   2692	  41972	   a3f4	10-Combined_System.elf
+Finished building: default.size.stdout
+ 
+
+01:12:41 Build Finished. 0 errors, 0 warnings. (took 252ms)
+
