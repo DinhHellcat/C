@@ -1,0 +1,10 @@
+14:07:40 **** Incremental Build of configuration Debug for project 12.MQandPIR ****
+make -j12 all 
+arm-none-eabi-size  12.MQandPIR.elf 
+   text	   data	    bss	    dec	    hex	filename
+  40408	    468	   3420	  44296	   ad08	12.MQandPIR.elf
+Finished building: default.size.stdout
+ 
+
+14:07:41 Build Finished. 0 errors, 0 warnings. (took 556ms)
+

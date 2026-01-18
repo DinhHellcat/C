@@ -60,8 +60,8 @@ all: main-build
 main-build: ARMControlledLinesensorVehicle.elf secondary-outputs
 
 # Tool invocations
-ARMControlledLinesensorVehicle.elf ARMControlledLinesensorVehicle.map: $(OBJS) $(USER_OBJS) D:\Learn\C\C\STM32\ARMControlledLinesensorVehicle\STM32F407VETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "ARMControlledLinesensorVehicle.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"D:\Learn\C\C\STM32\ARMControlledLinesensorVehicle\STM32F407VETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="ARMControlledLinesensorVehicle.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+ARMControlledLinesensorVehicle.elf ARMControlledLinesensorVehicle.map: $(OBJS) $(USER_OBJS) D:\Learn\C\C\STM32F407\ARMControlledLinesensorVehicle\STM32F407VETX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "ARMControlledLinesensorVehicle.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m4 -T"D:\Learn\C\C\STM32F407\ARMControlledLinesensorVehicle\STM32F407VETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="ARMControlledLinesensorVehicle.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 

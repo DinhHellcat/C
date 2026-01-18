@@ -1,0 +1,12 @@
+../Core/Src/main.c:46:6:AT_Send_And_Wait	5
+../Core/Src/main.c:70:6:WiFi_Connect_Polling	6
+../Core/Src/main.c:118:6:WiFi_Send_Raw	2
+../Core/Src/main.c:125:6:Control_Device	11
+../Core/Src/main.c:145:6:WiFi_Check_Downlink	4
+../Core/Src/main.c:164:6:annouce_buzzer	1
+../Core/Src/main.c:174:5:main	5
+../Core/Src/main.c:241:6:SystemClock_Config	3
+../Core/Src/main.c:264:13:MX_ADC1_Init	3
+../Core/Src/main.c:284:13:MX_USART6_UART_Init	2
+../Core/Src/main.c:295:13:MX_GPIO_Init	1
+../Core/Src/main.c:309:6:Error_Handler	1

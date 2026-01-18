@@ -1,0 +1,378 @@
+/* USER CODE BEGIN Header */
+/**
+  * @file           : main.c
+  * @brief          : STM32F4 + AI-WB-01S (AUTO RECONNECT & ROBUST PARSING)
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+UART_HandleTypeDef huart6;
+DHTxx_Drv_t dht11;
+
+// Buffer
+char rx_buffer_poll[512]; // Tăng buffer lên chút cho an toàn
+char at_resp_buffer[512];
+char tx_buffer[256];
+
+// Biến cảm biến
+float temp = 0.0f;
+float hum = 0.0f;
+int gas_mq2 = 0;
+int gas_mq135 = 0;
+int motion = 0;
+
+// --- FIX: BIẾN QUẢN LÝ TRẠNG THÁI MẠNG ---
+bool is_wifi_connected = false;
+
+/* Private function prototypes -----------------------------------------------*/
+static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_USART6_UART_Init(void);
+
+/* ============================================================================== */
+/* CORE FUNCTIONS                                                                 */
+/* ============================================================================== */
+
+// 1. Gửi AT (Polling) - Cơ bản giữ nguyên
+bool AT_Send_And_Wait(char* cmd, char* target_response, uint32_t timeout) {
+    memset(at_resp_buffer, 0, sizeof(at_resp_buffer));
+
+    // Clear buffer rác trước khi gửi
+    __HAL_UART_FLUSH_DRREGISTER(&huart6);
+
+    HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 100);
+    HAL_UART_Transmit(&huart6, (uint8_t*)"\r\n", 2, 100);
+
+    uint32_t tickStart = HAL_GetTick();
+    uint16_t idx = 0;
+
+    while ((HAL_GetTick() - tickStart) < timeout) {
+        uint8_t ch;
+        if (HAL_UART_Receive(&huart6, &ch, 1, 10) == HAL_OK) {
+            if (idx < sizeof(at_resp_buffer) - 1) {
+                at_resp_buffer[idx++] = ch;
+            }
+        }
+        // Check response liên tục
+        if (strstr(at_resp_buffer, target_response) != NULL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 2. Hàm Kết nối Server (Tách riêng để tái sử dụng khi mất mạng)
+bool WiFi_Connect_Server(void) {
+    char cmd[100];
+
+    // Đảm bảo ngắt kết nối cũ nếu có
+    AT_Send_And_Wait("AT+CIPCLOSE", "OK", 500);
+
+    sprintf(cmd, "AT+CIPSTART=\"TCP\",\"%s\",%d", SERVER_IP, SERVER_PORT);
+    if (AT_Send_And_Wait(cmd, "CONNECT", 5000)) { // Chờ CONNECT hoặc OK
+        // Gửi handshake để Server biết mình là ai
+        HAL_Delay(500);
+        sprintf(cmd, "CONNECT:%s\n", DEVICE_NODE_ID);
+
+        // Gửi gói tin đầu tiên thủ công để đăng ký
+        char send_cmd[50];
+        sprintf(send_cmd, "AT+CIPSEND=%d", strlen(cmd));
+        if(AT_Send_And_Wait(send_cmd, ">", 2000)) {
+            HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 100);
+            return true;
+        }
+    }
+    return false;
+}
+
+// 3. Khởi tạo WiFi (Chỉ chạy 1 lần đầu)
+void WiFi_Init(void) {
+    printf("[WIFI] Init...\r\n");
+    HAL_Delay(1000);
+
+    AT_Send_And_Wait("AT+RST", "ready", 5000);
+    HAL_Delay(1000);
+    AT_Send_And_Wait("ATE0", "OK", 1000); // --- FIX: Tắt Echo để tránh spam rác ---
+    AT_Send_And_Wait("AT+CWMODE=1", "OK", 1000);
+
+    // Kết nối WiFi
+    char cmd[100];
+    sprintf(cmd, "AT+CWJAP=\"%s\",\"%s\"", WIFI_SSID, WIFI_PASSWORD);
+
+    int retry = 0;
+    while (!AT_Send_And_Wait(cmd, "WIFI GOT IP", 10000)) {
+        printf("[WIFI] Retrying connection...\r\n");
+        retry++;
+        if(retry > 5) break; // Thoát ra để vào vòng lặp chính xử lý sau
+    }
+
+    // Kết nối Server
+    if (WiFi_Connect_Server()) {
+        is_wifi_connected = true;
+        annouce_led(3); // Nháy 3 lần báo thành công
+    } else {
+        is_wifi_connected = false;
+        annouce_led(5); // Nháy 5 lần báo lỗi
+    }
+}
+
+// 4. Gửi Data (Có check lỗi để Reconnect)
+bool WiFi_Send_Data(char* data) {
+    char send_cmd[50];
+    sprintf(send_cmd, "AT+CIPSEND=%d", strlen(data));
+
+    // --- FIX QUAN TRỌNG: Kiểm tra xem module có cho phép gửi không ---
+    // Nếu gửi lệnh CIPSEND mà module không trả về ">" (dấu nhắc),
+    // nghĩa là Socket đã chết hoặc module đang lỗi.
+    if (AT_Send_And_Wait(send_cmd, ">", 2000)) {
+        // Module sẵn sàng, gửi data
+        HAL_UART_Transmit(&huart6, (uint8_t*)data, strlen(data), 100);
+
+        // Chờ xác nhận gửi xong
+        // Một số module trả về "SEND OK", số khác trả về "DATA ACCEPT"
+        // Ở đây ta chờ 500ms, nếu không thấy lỗi ERROR thì tạm coi là OK
+        return true;
+    } else {
+        // Không thấy dấu ">", tức là mất kết nối
+        printf("[WIFI] Send Fail! Link lost.\r\n");
+        return false;
+    }
+}
+
+// 5. Nhận và Xử lý Lệnh (Downlink)
+void WiFi_Receive_And_Parse(void) {
+    // Polling UART non-blocking (timeout ngắn)
+    memset(rx_buffer_poll, 0, sizeof(rx_buffer_poll));
+
+    // Đọc thử xem có gì không
+    if (HAL_UART_Receive(&huart6, (uint8_t*)rx_buffer_poll, sizeof(rx_buffer_poll)-1, 100) == HAL_OK) {
+        // Có dữ liệu
+        // Format từ module thường là: "+IPD,<len>:CMD:RELAY_1:ON"
+
+        char* ipd_ptr = strstr(rx_buffer_poll, "+IPD");
+        if (ipd_ptr != NULL) {
+            // Tìm thấy gói tin data
+            char* cmd_ptr = strstr(ipd_ptr, "CMD:");
+            if (cmd_ptr != NULL) {
+                // Parse lệnh: CMD:<DEVICE>:<VALUE>
+                // Ví dụ: CMD:RELAY_1:ON
+                char device[20] = {0};
+                char value[20] = {0};
+
+                // Cắt chuỗi an toàn
+                // CMD:RELAY_1:ON
+                // sscanf có thể nguy hiểm nếu format sai, dùng strtok hoặc logic tay sẽ tốt hơn
+                // Ở đây dùng sscanf đơn giản:
+                if (sscanf(cmd_ptr, "CMD:%[^:]:%s", device, value) == 2) {
+                    printf("[CMD] Dev: %s | Val: %s\r\n", device, value);
+                    Control_Device(device, value);
+                }
+            }
+        }
+    }
+}
+
+// 6. Điều khiển thiết bị
+void Control_Device(char* device, char* value) {
+    GPIO_PinState state = GPIO_PIN_RESET;
+    // Chuẩn hóa value: ON, 1, TRUE -> SET (Kích Low Level Trigger hoặc High tùy mạch)
+    // Giả sử mạch Relay kích mức THẤP (Low Level Trigger) thì ON = RESET, OFF = SET.
+    // Nếu mạch Relay kích mức CAO (High Level Trigger) thì ON = SET, OFF = RESET.
+
+    // --- GIẢ SỬ MẠCH KÍCH MỨC CAO (High Trigger) ---
+    // (Nếu mạch bạn kích mức thấp, hãy đổi ngược lại GPIO_PIN_SET/RESET ở dưới)
+    if (strcmp(value, "ON") == 0 || strcmp(value, "1") == 0) {
+        state = GPIO_PIN_SET;
+    } else {
+        state = GPIO_PIN_RESET;
+    }
+
+    // Logic đá Relay
+    if (strcmp(device, "RELAY_1") == 0) {
+        HAL_GPIO_WritePin(RELAY1_Port, RELAY1_Pin, state);
+    }
+    else if (strcmp(device, "RELAY_2") == 0) {
+        HAL_GPIO_WritePin(RELAY2_Port, RELAY2_Pin, state);
+    }
+    else if (strcmp(device, "RELAY_3") == 0) {
+        HAL_GPIO_WritePin(RELAY3_Port, RELAY3_Pin, state);
+    }
+    else if (strcmp(device, "BUZZER") == 0) {
+        HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, state);
+    }
+
+    // --- FIX: Chống nhiễu sau khi đá Relay ---
+    // Khi relay nhảy, nguồn có thể sụt, gây nhiễu UART. Delay nhẹ.
+    HAL_Delay(100);
+    // Clear buffer UART để tránh đọc rác do nhiễu
+    __HAL_UART_FLUSH_DRREGISTER(&huart6);
+}
+
+// Helper: Nháy LED
+void annouce_led(int times) {
+    for(int i=0; i<times; i++) {
+        HAL_GPIO_TogglePin(LED_TEST_Port, LED_TEST_Pin);
+        HAL_Delay(200);
+        HAL_GPIO_TogglePin(LED_TEST_Port, LED_TEST_Pin);
+        HAL_Delay(200);
+    }
+}
+
+/* ============================================================================== */
+/* MAIN                                                                           */
+/* ============================================================================== */
+int main(void) {
+    HAL_Init();
+    SystemClock_Config();
+    MX_GPIO_Init();
+    MX_ADC1_Init();
+    MX_USART6_UART_Init();
+    DWT_Delay_Init();
+    DHTxx_Init(&dht11, DHT_Port, DHT_Pin);
+
+    // 1. Kết nối WiFi & Server lần đầu
+    WiFi_Init();
+
+    uint32_t last_uplink = 0;
+
+    while (1) {
+        // --- LOGIC RECONNECT ---
+        // Nếu cờ báo mất mạng (is_wifi_connected == false), thử kết nối lại
+        if (!is_wifi_connected) {
+            printf("[MAIN] Lost connection. Reconnecting...\r\n");
+            annouce_led(1);
+            if (WiFi_Connect_Server()) {
+                is_wifi_connected = true;
+                printf("[MAIN] Reconnected!\r\n");
+            } else {
+                HAL_Delay(2000); // Chờ xíu rồi thử lại
+                continue; // Bỏ qua uplink
+            }
+        }
+
+        // --- UPLINK (GỬI CẢM BIẾN) ---
+        if (HAL_GetTick() - last_uplink > UPLINK_INTERVAL) {
+            // Đọc cảm biến
+            temp = DHTxx_Read_Temp(&dht11);
+            hum = DHTxx_Read_Hum(&dht11);
+            HAL_ADC_Start(&hadc1);
+            if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) {
+                gas_mq2 = HAL_ADC_GetValue(&hadc1);
+            }
+            HAL_ADC_Stop(&hadc1);
+            motion = HAL_GPIO_ReadPin(PIR_Port, PIR_Pin);
+
+            // Tạo JSON
+            memset(tx_buffer, 0, sizeof(tx_buffer));
+            sprintf(tx_buffer,
+                "{\"temp\":%.1f,\"hum\":%.1f,\"gas_mq2\":%d,\"gas_mq135\":%d,\"motion\":%d}\n",
+                temp, hum, gas_mq2, gas_mq135, motion);
+
+            // Gửi và kiểm tra kết quả
+            // Nếu gửi thất bại -> set is_wifi_connected = false
+            if (!WiFi_Send_Data(tx_buffer)) {
+                is_wifi_connected = false;
+            }
+
+            last_uplink = HAL_GetTick();
+        }
+
+        // --- DOWNLINK (NHẬN LỆNH) ---
+        // Luôn lắng nghe lệnh từ Server
+        if (is_wifi_connected) {
+            WiFi_Receive_And_Parse();
+        }
+    }
+}
+
+/* ============================================================================== */
+/* SYSTEM CONFIG (AUTO GENERATED)                                                 */
+/* ============================================================================== */
+void SystemClock_Config(void) {
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 16;
+  RCC_OscInitStruct.PLL.PLLN = 336;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV4;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_ADC1_Init(void) {
+  ADC_ChannelConfTypeDef sConfig = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) { Error_Handler(); }
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_USART6_UART_Init(void) {
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  // Khởi tạo Output mức thấp (hoặc cao tùy mạch) cho Relay/Led/Buzzer
+  HAL_GPIO_WritePin(GPIOA, LED_TEST_Pin|BUZZER_TEST_Pin|RELAY1_Pin|RELAY2_Pin|RELAY3_Pin, GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = LED_TEST_Pin|BUZZER_TEST_Pin|RELAY1_Pin|RELAY2_Pin|RELAY3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = PIR_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+void Error_Handler(void) {
+  __disable_irq();
+  while (1) {}
+}

@@ -1,0 +1,90 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.h
+  * @brief          : Header for main.c file (FIXED RECONNECTION)
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Define to prevent recursive inclusion -------------------------------------*/
+#ifndef __MAIN_H
+#define __MAIN_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Includes ------------------------------------------------------------------*/
+#include "stm32f4xx_hal.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdbool.h>
+
+// --- INCLUDE THƯ VIỆN CỦA BẠN ---
+#include "dwt.h"
+#include "dhtxx.h"
+// ------------------------------------
+
+/* ============================================================================== */
+/* 1. CẤU HÌNH MẠNG                                                              */
+/* ============================================================================== */
+#define DEVICE_NODE_ID  "NODE_02"
+#define WIFI_SSID       "Herukyatto"
+#define WIFI_PASSWORD   "123456789"
+// IP Của Jetson/PC chạy Python
+#define SERVER_IP       "192.168.137.108"
+#define SERVER_PORT     5000
+#define UPLINK_INTERVAL 3000
+
+/* ============================================================================== */
+/* 2. CẤU HÌNH PHẦN CỨNG (PIN MAP)                                               */
+/* ============================================================================== */
+// INPUT SENSORS
+#define MQ2_Pin         GPIO_PIN_0
+#define MQ2_Port        GPIOA
+#define MQ135_Pin       GPIO_PIN_1
+#define MQ135_Port      GPIOA
+#define PIR_Pin         GPIO_PIN_4
+#define PIR_Port        GPIOA
+#define DHT_Pin         GPIO_PIN_5
+#define DHT_Port        GPIOA
+
+// OUTPUT & RELAYS
+#define BUZZER_TEST_Pin GPIO_PIN_10
+#define BUZZER_TEST_Port GPIOA
+#define LED_TEST_Pin    GPIO_PIN_9
+#define LED_TEST_Port   GPIOA
+
+#define RELAY1_Pin      GPIO_PIN_11
+#define RELAY1_Port     GPIOA
+#define RELAY2_Pin      GPIO_PIN_12
+#define RELAY2_Port     GPIOA
+#define RELAY3_Pin      GPIO_PIN_15
+#define RELAY3_Port     GPIOA
+
+/* ============================================================================== */
+/* 3. KHAI BÁO HÀM (Prototypes)                                                  */
+/* ============================================================================== */
+void Error_Handler(void);
+void SystemClock_Config(void);
+
+// Utils
+void annouce_led(int times);
+
+// WiFi Core Functions (Đã sửa logic trả về bool)
+bool AT_Send_And_Wait(char* cmd, char* target_response, uint32_t timeout);
+void WiFi_Init(void);
+bool WiFi_Connect_Server(void); // Hàm mới: Kết nối server
+bool WiFi_Send_Data(char* data); // Hàm mới: Trả về true/false để biết còn mạng không
+void WiFi_Receive_And_Parse(void);
+
+// Device Control
+void Control_Device(char* device, char* value);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __MAIN_H */

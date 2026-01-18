@@ -1,0 +1,318 @@
+/* USER CODE BEGIN Header */
+/**
+  * @file           : main.c
+  * @brief          : STM32F4 + AI-WB-01S (CLEAN & FIXED)
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h" // Chỉ cần include file này là đủ
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+UART_HandleTypeDef huart6;
+
+// Buffer nhận dữ liệu (Polling)
+char rx_buffer[1024];
+char tx_buffer[256];
+
+// Biến cảm biến (Implementation)
+float temp = 0.0f;
+float hum = 0.0f;
+int gas_mq2 = 0;
+int gas_mq135 = 0;
+int motion = 0;
+
+/* Private function prototypes -----------------------------------------------*/
+static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_USART6_UART_Init(void);
+
+/* ============================================================================== */
+/* MAIN FUNCTION                                                                  */
+/* ============================================================================== */
+int main(void)
+{
+  /* 1. Init System */
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_ADC1_Init();
+  MX_USART6_UART_Init();
+
+  /* 2. Test Hardware Startup */
+  relaytest(200, 1);
+  annouce_buzzer(100);
+
+  /* 3. Connect Wifi (Blocking until success) */
+  WiFi_Connect_Polling();
+
+  /* 4. Main Loop */
+  while (1)
+  {
+      // --- A. ĐỌC CẢM BIẾN ---
+      gas_mq2 = Read_ADC_Channel(ADC_CHAN_MQ2);
+      gas_mq135 = Read_ADC_Channel(ADC_CHAN_MQ135);
+      motion = HAL_GPIO_ReadPin(PIR_Port, PIR_Pin);
+
+      // Giả lập nhiệt độ (thay bằng DHT_Read nếu đã tích hợp thư viện)
+      temp = 30.5;
+      hum = 60.0;
+
+      // --- B. XỬ LÝ SỰ CỐ (LOCAL ALARM) ---
+      // Logic: Vượt ngưỡng -> Bật còi báo động tại chỗ ngay lập tức
+      // Không dùng vòng lặp while để tránh chặn luồng gửi tin
+      if (gas_mq2 > GAS_THRESHOLD || temp > TEMP_THRESHOLD) {
+          HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_SET);
+          // Nháy Relay cảnh báo
+          HAL_GPIO_TogglePin(RELAY1_Port, RELAY1_Pin);
+      } else {
+          // Trạng thái an toàn -> Tắt còi
+          HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_RESET);
+          HAL_GPIO_WritePin(RELAY1_Port, RELAY1_Pin, GPIO_PIN_RESET);
+      }
+
+      // --- C. GỬI DỮ LIỆU JSON (UPLINK) ---
+      memset(tx_buffer, 0, sizeof(tx_buffer));
+      sprintf(tx_buffer, "{\"temp\":%.1f,\"hum\":%.1f,\"gas_mq2\":%d,\"gas_mq135\":%d,\"motion\":%d}\n",
+              temp, hum, gas_mq2, gas_mq135, motion);
+
+      // Gửi Raw qua UART6 (Vì đang ở chế độ Transparent)
+      HAL_UART_Transmit(&huart6, (uint8_t*)tx_buffer, strlen(tx_buffer), 1000);
+
+      // --- D. CHECK KẾT NỐI (POLLING NHẸ) ---
+      // Kiểm tra xem có bị mất kết nối không (Module trả về CLOSED/ERROR)
+      // Dùng timeout cực ngắn (10ms) để không chặn luồng
+      uint8_t ch;
+      if (HAL_UART_Receive(&huart6, &ch, 1, 10) == HAL_OK) {
+           // Nếu nhận được ký tự 'C' (trong CLOSED) hoặc 'E' (trong ERROR)
+           // Logic này đơn giản hóa, thực tế có thể cần gom buffer
+           if (ch == 'C' || ch == 'E') {
+               // Có thể đọc thêm để xác nhận, ở đây ta giả định nếu nghi ngờ thì Reconnect
+               // Hoặc đơn giản là để vòng lặp tiếp theo xử lý
+           }
+      }
+
+      HAL_Delay(UPLINK_INTERVAL);
+  }
+}
+
+/* ============================================================================== */
+/* IMPLEMENTATION FUNCTIONS                                                       */
+/* ============================================================================== */
+
+// 1. Gửi lệnh AT Polling (Blocking)
+bool ESP_Polling_Send(char *cmd, char *target_response, int timeout_ms) {
+    char local_rx[512]; // Dùng buffer cục bộ để tránh conflict
+    int idx = 0;
+    memset(local_rx, 0, sizeof(local_rx));
+
+    // Gửi lệnh
+    HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 1000);
+
+    uint32_t start = HAL_GetTick();
+    while ((HAL_GetTick() - start) < timeout_ms) {
+        uint8_t ch;
+        if (HAL_UART_Receive(&huart6, &ch, 1, 10) == HAL_OK) {
+            local_rx[idx++] = ch;
+            if (idx >= sizeof(local_rx) - 1) idx = 0;
+            local_rx[idx] = '\0';
+
+            if (strstr(local_rx, target_response) != NULL) return true;
+        }
+    }
+    return false;
+}
+
+// 2. Kết nối Wifi (Logic Pooling Lì Lợm)
+void WiFi_Connect_Polling(void) {
+    char cmd[128];
+    annouce_buzzer(200);
+
+    // Thoát chế độ cũ
+//    HAL_UART_Transmit(&huart6, (uint8_t*)"+++", 3, 1000);
+    HAL_Delay(1000);
+
+    while (1) {
+        // Step 1: AT
+        while (!ESP_Polling_Send("AT\r\n", "OK", 1000)) {
+//            HAL_UART_Transmit(&huart6, (uint8_t*)"+++", 3, 1000); // Thử thoát lại
+            HAL_Delay(500);
+            HAL_GPIO_TogglePin(RELAY1_Port, RELAY1_Pin); // Báo hiệu đang kẹt
+        }
+        HAL_GPIO_WritePin(RELAY1_Port, RELAY1_Pin, GPIO_PIN_RESET);
+
+        // Step 2: Config
+        ESP_Polling_Send("AT+RST\r\n", "ready", 5000);
+        HAL_Delay(1000);
+        ESP_Polling_Send("ATE0\r\n", "OK", 1000);
+
+        while (!ESP_Polling_Send("AT+WMODE=1,1\r\n", "OK", 2000)) HAL_Delay(500);
+
+        // Step 3: Wifi
+        sprintf(cmd, "AT+WJAP=%s,%s\r\n", WIFI_SSID, WIFI_PASSWORD);
+        while (!ESP_Polling_Send(cmd, "+EVENT:WIFI_GOT_IP", 20000)) {
+            annouce_buzzer(500); // Kêu dài báo lỗi Wifi
+            // Nếu lỗi Wifi, break ra để reset module làm lại từ đầu
+            break;
+        }
+        // Nếu không kết nối được Wifi (break ở trên), vòng lặp to sẽ quay lại AT+RST
+        // Mẹo: Check lại xem lệnh vừa rồi có OK không bằng cách gửi AT thử
+        if (!ESP_Polling_Send("AT\r\n", "OK", 500)) continue;
+
+        annouce_buzzer(100);
+
+        // Step 4: Server
+        sprintf(cmd, "AT+SOCKET=4,%s,%d\r\n", SERVER_IP, SERVER_PORT);
+        while (1) {
+             if (ESP_Polling_Send(cmd, "connect success", 5000)) break;
+             if (ESP_Polling_Send("AT\r\n", "ALREADY CONNECTED", 500)) break; // Check trường hợp đã nối
+             HAL_Delay(2000);
+        }
+
+        // Step 5: Transparent
+        if (ESP_Polling_Send("AT+SOCKETTT\r\n", ">", 3000)) {
+            annouce_buzzer(100); annouce_buzzer(100); annouce_buzzer(100);
+
+            // Handshake
+            char handshake[32];
+            sprintf(handshake, "CONNECT:%s\n", DEVICE_NODE_ID);
+            HAL_UART_Transmit(&huart6, (uint8_t*)handshake, strlen(handshake), 1000);
+            return; // XONG
+        }
+    }
+}
+
+// 3. Đọc ADC
+int Read_ADC_Channel(uint32_t channel) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = channel;
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+
+    // Cấu hình kênh
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) {
+        // Handle Error
+    }
+
+    HAL_ADC_Start(&hadc1);
+    HAL_ADC_PollForConversion(&hadc1, 100);
+    int val = HAL_ADC_GetValue(&hadc1);
+    HAL_ADC_Stop(&hadc1);
+    return val;
+}
+
+// 4. Các hàm Utils khác
+void annouce_buzzer(int timeout) {
+    HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_SET);
+    HAL_Delay(timeout);
+    HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_RESET);
+    HAL_Delay(100);
+}
+
+void relaytest(uint32_t timeout, int relay_id) {
+    GPIO_TypeDef* port = GPIOA;
+    uint16_t pin = 0;
+    switch(relay_id) {
+        case 1: pin = RELAY1_Pin; break;
+        case 2: pin = RELAY2_Pin; break;
+        case 3: pin = RELAY3_Pin; break;
+        default: return;
+    }
+    HAL_GPIO_WritePin(port, pin, GPIO_PIN_SET);
+    HAL_Delay(timeout);
+    HAL_GPIO_WritePin(port, pin, GPIO_PIN_RESET);
+}
+
+/* ============================================================================== */
+/* HAL INIT FUNCTIONS (GENERATED)                                                 */
+/* ============================================================================== */
+
+void SystemClock_Config(void) {
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 180;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) { Error_Handler(); }
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_ADC1_Init(void) {
+  ADC_ChannelConfTypeDef sConfig = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) { Error_Handler(); }
+
+  // Fix Warning: Use sConfig at least once or remove it.
+  // Here we use it to config a default channel to keep HAL happy.
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_USART6_UART_Init(void) {
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  HAL_GPIO_WritePin(GPIOA, LED_TEST_Pin|BUZZER_TEST_Pin|RELAY1_Pin|RELAY2_Pin|RELAY3_Pin, GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = LED_TEST_Pin|BUZZER_TEST_Pin|RELAY1_Pin|RELAY2_Pin|RELAY3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = MQ2_Pin|MQ135_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = PIR_Pin|DHT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+void Error_Handler(void) {
+  __disable_irq();
+  while (1) { }
+}

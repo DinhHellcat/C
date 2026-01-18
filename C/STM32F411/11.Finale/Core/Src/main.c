@@ -1,8 +1,8 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Chương trình chính cho hệ thống nhà thông minh (Phiên bản tổng hợp)
-  * @author         : Your Name & Gemini
+  * @brief          : Chương trình chính cho hệ thống nhà thông minh (Phiên bản mini project)
+  * @author         :
   * @version        : 1.0
   ******************************************************************************
   * @attention
@@ -29,7 +29,7 @@
 /* Private defines -----------------------------------------------------------*/
 #define WIFI_SSID       "Herukyatto"
 #define WIFI_PASSWORD   "1234567890"
-#define LOCAL_API_IP    "192.168.137.1" // Thay đổi IP nếu cần
+#define LOCAL_API_IP    "10.13.71.41"
 #define LOCAL_API_PORT  5000
 
 #define GAS_ALARM_THRESHOLD 1500 // Ngưỡng cảnh báo gas
@@ -140,35 +140,76 @@ int main(void)
     {
         case APP_STATE_WIFI_CONNECT:
         {
+//        	lcd_clear(&lcd);
+//        	lcd_puts(&lcd, "Checking AT...");
+//        	if (send_at_command("AT\r\n", "OK", 1000)) {
+//        	    lcd_gotoxy(&lcd, 0, 1);
+//        	    lcd_puts(&lcd, "AT OK");
+//        	} else {
+//        	    lcd_gotoxy(&lcd, 0, 1);
+//        	    lcd_puts(&lcd, "AT FAIL");
+//        	    while(1); // Dừng ở đây nếu AT cơ bản lỗi
+//        	}
+//        	HAL_Delay(1000);
+//
+//        	lcd_clear(&lcd);
+//        	lcd_puts(&lcd, "Checking GMR...");
+//        	if (send_at_command("AT+GMR\r\n", "OK", 2000)) { // Chờ phản hồi version
+//        	    lcd_gotoxy(&lcd, 0, 1);
+//        	    // Chỉ hiển thị 16 ký tự đầu của response_buffer (chứa version)
+//        	    char version_info[17];
+//        	    strncpy(version_info, response_buffer, 16);
+//        	    version_info[16] = '\0';
+//        	    lcd_puts(&lcd, version_info);
+//        	} else {
+//        	    lcd_gotoxy(&lcd, 0, 1);
+//        	    lcd_puts(&lcd, "GMR FAIL");
+//        	     while(1); // Dừng ở đây nếu GMR lỗi
+//        	}
+//        	HAL_Delay(2000);
+
             lcd_clear(&lcd);
-            lcd_puts(&lcd, "Connecting WiFi...");
+            lcd_puts(&lcd, "Reseting");
 
-            // Trình tự kết nối WiFi
             send_at_command("AT+RST\r\n", "ready", 5000);
-            HAL_Delay(1000); // Delay ngắn cần thiết sau reset
-            send_at_command("ATE0\r\n", "OK", 1000);
-            send_at_command("AT+WMODE=1,1\r\n", "OK", 2000);
+			HAL_Delay(2000); // Chờ module khởi động lại
+			send_at_command("ATE0\r\n", "OK", 1000);
+			HAL_Delay(500);
+			send_at_command("AT+WMODE=1,1\r\n", "OK", 3000); // Đặt làm Station Mode
+			HAL_Delay(500);
 
-            char connect_cmd[100];
-            sprintf(connect_cmd, "AT+WJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+			lcd_clear(&lcd);
+			lcd_puts(&lcd, "Connecting WiFi...");
 
-            if (send_at_command(connect_cmd, "+EVENT:WIFI_GOT_IP", 15000))
-            {
-                lcd_clear(&lcd);
-                lcd_puts(&lcd, "WiFi Connected!");
-                HAL_Delay(2000);
-                app_state = APP_STATE_RUNNING; // Chuyển trạng thái thành công
-                last_main_logic_time = ms_ticks; // Reset các mốc thời gian
-                last_api_send_time = ms_ticks;
-            }
-            else
-            {
-                lcd_clear(&lcd);
-                lcd_puts(&lcd, "WiFi Failed!");
-                HAL_Delay(5000); // Chờ và thử lại
-            }
-            break;
-        }
+			char connect_cmd[100];
+			sprintf(connect_cmd, "AT+WJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+
+			// Tăng timeout lên một chút để chắc chắn hơn
+			if (send_at_command(connect_cmd, "+EVENT:WIFI_GOT_IP", 20000)) // Tăng lên 20 giây
+			{
+				lcd_clear(&lcd);
+				lcd_puts(&lcd, "WiFi Connected!");
+				HAL_Delay(2000);
+				app_state = APP_STATE_RUNNING;
+				last_main_logic_time = ms_ticks;
+				last_api_send_time = ms_ticks;
+			}
+			else
+			{
+				lcd_clear(&lcd);
+				lcd_puts(&lcd, "WiFi Failed!");
+				lcd_gotoxy(&lcd, 0, 1);
+				// Hiển thị một phần buffer lỗi lên dòng 2 LCD
+				// response_buffer có thể rất dài, chỉ hiển thị 16 ký tự đầu
+				char error_msg[17];
+				strncpy(error_msg, response_buffer, 16);
+				error_msg[16] = '\0'; // Đảm bảo chuỗi kết thúc null
+				lcd_puts(&lcd, error_msg);
+
+				HAL_Delay(5000); // Chờ 5 giây trước khi thử lại
+			}
+			break;
+		}
 
         case APP_STATE_RUNNING:
         {
@@ -257,23 +298,42 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
-  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI; // CHỌN HSI
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
-  RCC_OscInitStruct.PLL.PLLM = 4;
-  RCC_OscInitStruct.PLL.PLLN = 100;
-  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI; // NGUỒN CHO PLL LÀ HSI
+  RCC_OscInitStruct.PLL.PLLM = 8; // 16MHz / 8 = 2MHz
+  RCC_OscInitStruct.PLL.PLLN = 100; // 2MHz * 100 = 200MHz
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2; // 200MHz / 2 = 100MHz (SYSCLK)
   RCC_OscInitStruct.PLL.PLLQ = 4;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK; // LẤY XUNG TỪ PLL
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK) Error_Handler();
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 static void MX_ADC1_Init(void)
@@ -432,14 +492,20 @@ int send_at_command(const char* command, const char* expected_response, uint32_t
     response_index = 0;
     HAL_UART_Transmit(&huart6, (uint8_t*)command, strlen(command), 1000);
 
-    uint32_t start_time = HAL_GetTick();
+    uint32_t start_time = HAL_GetTick(); // Sử dụng HAL_GetTick() thay vì ms_ticks
     while (HAL_GetTick() - start_time < timeout)
     {
+        // Kiểm tra xem phản hồi mong đợi đã có trong buffer chưa
         if (strstr(response_buffer, expected_response) != NULL)
         {
             return 1; // Success
         }
+        // Thêm độ trễ nhỏ để giảm tải CPU và cho phép UART ISR chạy
+        HAL_Delay(10); // Đợi 10ms trước khi kiểm tra lại
     }
+    // Nếu hết thời gian chờ mà không thấy phản hồi
+    // In ra buffer hiện tại để debug (tùy chọn)
+    // printf("Timeout waiting for '%s' in response to '%s'. Buffer: %s\n", expected_response, command, response_buffer);
     return 0; // Fail
 }
 

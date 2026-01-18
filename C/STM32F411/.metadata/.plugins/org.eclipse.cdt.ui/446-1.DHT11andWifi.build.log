@@ -1,0 +1,10 @@
+14:52:06 **** Incremental Build of configuration Debug for project 446-1.DHT11andWifi ****
+make -j12 all 
+arm-none-eabi-size  446-1.DHT11andWifi.elf 
+   text	   data	    bss	    dec	    hex	filename
+  40508	    468	   3420	  44396	   ad6c	446-1.DHT11andWifi.elf
+Finished building: default.size.stdout
+ 
+
+14:52:07 Build Finished. 0 errors, 0 warnings. (took 358ms)
+

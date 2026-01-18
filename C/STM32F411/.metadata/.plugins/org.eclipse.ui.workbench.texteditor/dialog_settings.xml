@@ -1,12 +1,44 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <section name="Workbench">
 	<item key="hasShownOverlayPopupBefore" value="true"/>
-	<item key="replaceBarOpen" value="false"/>
+	<item key="replaceBarOpen" value="true"/>
 	<list key="searchhistory">
+		<item value="#ifdef DEBUG_LCD == ON"/>
+		<item value="#ifdef(DEBUG_LCD == ON)"/>
+		<item value="lcd"/>
+		<item value="MX_ADC1_Init"/>
+		<item value="checking"/>
+		<item value="system"/>
+		<item value="LED_ON"/>
+		<item value="send_at"/>
+		<item value="DMA"/>
 		<item value="HAL_ADC_Start(&amp;hadc1);"/>
 		<item value="/* USER CODE BEGIN 4 */"/>
 		<item value="MX_TIM2_Init"/>
-		<item value="MX_ADC1_Init"/>
 		<item value="HSE"/>
 	</list>
+	<list key="replacehistory">
+		<item value="#if DEBUG_LCD == ON"/>
+		<item value="#ifdef DEBUG_LCD == ON"/>
+	</list>
+	<section name="org.eclipse.ui.texteditor.FindReplaceDialog">
+		<item key="selection" value=""/>
+		<item key="wrap" value="true"/>
+		<item key="casesensitive" value="false"/>
+		<item key="wholeword" value="false"/>
+		<item key="incremental" value="false"/>
+		<item key="isRegEx" value="false"/>
+		<list key="findhistory">
+			<item value="huart2"/>
+		</list>
+		<list key="replacehistory">
+		</list>
+	</section>
+	<section name="org.eclipse.ui.texteditor.FindReplaceDialog_dialogBounds">
+		<item key="DIALOG_X_ORIGIN" value="807"/>
+		<item key="DIALOG_Y_ORIGIN" value="288"/>
+		<item key="DIALOG_WIDTH" value="322"/>
+		<item key="DIALOG_HEIGHT" value="391"/>
+		<item key="DIALOG_FONT_NAME" value="1|Segoe UI|9.0|0|WINDOWS|1|-12|0|0|0|400|0|0|0|1|0|0|0|0|Segoe UI"/>
+	</section>
 </section>

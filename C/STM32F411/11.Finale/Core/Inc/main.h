@@ -65,8 +65,8 @@ void Error_Handler(void);
 #define MQ_2_GPIO_Port GPIOA
 #define MQ_135_Pin GPIO_PIN_1
 #define MQ_135_GPIO_Port GPIOA
-#define SERVO_Pin GPIO_PIN_2
-#define SERVO_GPIO_Port GPIOA
+#define Servo_Pin GPIO_PIN_2
+#define Servo_GPIO_Port GPIOA
 #define PIR_Pin GPIO_PIN_4
 #define PIR_GPIO_Port GPIOA
 #define DHT22_Pin GPIO_PIN_5

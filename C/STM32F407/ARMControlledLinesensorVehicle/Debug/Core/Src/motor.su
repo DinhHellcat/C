@@ -1,0 +1,14 @@
+../Core/Src/motor.c:8:6:setMotor	24	static
+../Core/Src/motor.c:22:6:forward	16	static
+../Core/Src/motor.c:27:6:backward	16	static
+../Core/Src/motor.c:32:6:stop	16	static
+../Core/Src/motor.c:38:6:shapeRight	16	static
+../Core/Src/motor.c:43:6:shapeLeft	16	static
+../Core/Src/motor.c:48:6:turnRight	16	static
+../Core/Src/motor.c:53:6:turnLeft	16	static
+../Core/Src/motor.c:58:6:hardRight	16	static
+../Core/Src/motor.c:63:6:hardLeft	16	static
+../Core/Src/motor.c:69:6:backRight	16	static
+../Core/Src/motor.c:74:6:backLeft	16	static
+../Core/Src/motor.c:79:6:hardBackRight	16	static
+../Core/Src/motor.c:84:6:hardBackLeft	16	static

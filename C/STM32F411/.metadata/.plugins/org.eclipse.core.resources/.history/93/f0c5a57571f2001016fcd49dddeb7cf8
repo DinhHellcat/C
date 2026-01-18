@@ -1,0 +1,531 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body for STM32F4 + AI-WB-01S (Transparent Mode)
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdbool.h>
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+// Include thư viện cảm biến của bạn ở đây nếu có (VD: dht11.h)
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+// --- CẤU HÌNH WIFI & SERVER ---
+#define WIFI_SSID     "Herukyatto"      // <--- ĐIỀN TÊN WIFI
+#define WIFI_PASSWORD "123456789"        // <--- ĐIỀN PASS WIFI
+#define SERVER_IP     "192.168.137.103"       // <--- IP JETSON/PC (Chạy python gateway)
+#define SERVER_PORT   5000                 // <--- PORT
+#define DEVICE_NODE_ID "NODE_01"           // <--- ID CỦA NODE NÀY
+
+#define UPLINK_INTERVAL 3000               // Gửi dữ liệu mỗi 3 giây
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
+TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart2; // UART Debug (PC)
+UART_HandleTypeDef huart6; // UART WiFi (AI-WB-01S)
+
+/* USER CODE BEGIN PV */
+// Buffer xử lý UART
+char rx_buffer[512];
+char tx_buffer[256];
+uint16_t rx_index = 0;
+uint8_t rx_byte;
+
+// Biến cảm biến
+float temp = 0.0f;
+float hum = 0.0f;
+int gas_mq2 = 0;
+int gas_mq135 = 0;
+int motion = 0;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_USART6_UART_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM2_Init(void);
+
+/* USER CODE BEGIN PFP */
+void Buzzer_Beep(int times, int duration_ms);
+void Clear_RxBuffer(void);
+bool ESP_SendCommand(char *cmd, char *target_response, int timeout_ms);
+void WiFi_Connect_Strict(void);
+void Read_Sensors(void); // Hàm giả lập đọc cảm biến
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+// 1. Hàm nhận ngắt UART (Lưu từng byte vào buffer)
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART6) {
+        if (rx_index < sizeof(rx_buffer) - 1) {
+            rx_buffer[rx_index++] = rx_byte;
+            rx_buffer[rx_index] = '\0'; // Null-terminate string
+        } else {
+            // Buffer tràn -> Xóa bớt hoặc reset (đơn giản là reset index)
+            rx_index = 0;
+        }
+        // Tiếp tục nhận byte tiếp theo
+        HAL_UART_Receive_IT(&huart6, &rx_byte, 1);
+    }
+}
+
+// 2. Xóa buffer
+void Clear_RxBuffer(void) {
+    memset(rx_buffer, 0, sizeof(rx_buffer));
+    rx_index = 0;
+}
+
+// 3. Còi Bíp
+void Buzzer_Beep(int times, int duration_ms) {
+    for (int i = 0; i < times; i++) {
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_SET); // Giả sử Buzzer ở PB3
+        HAL_Delay(duration_ms);
+        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+        HAL_Delay(100);
+    }
+}
+
+// 4. Gửi lệnh AT và chờ phản hồi (Blocking)
+bool ESP_SendCommand(char *cmd, char *target_response, int timeout_ms) {
+    Clear_RxBuffer();
+    // Gửi lệnh qua UART6
+    HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 1000);
+
+    // In ra Debug (UART2) để theo dõi trên PC
+    char debug_msg[64];
+    sprintf(debug_msg, "[SENT] %s", cmd);
+    HAL_UART_Transmit(&huart2, (uint8_t*)debug_msg, strlen(debug_msg), 1000);
+
+    // Chờ phản hồi
+    uint32_t start_time = HAL_GetTick();
+    while ((HAL_GetTick() - start_time) < timeout_ms) {
+        if (strstr(rx_buffer, target_response) != NULL) {
+            // Tìm thấy phản hồi mong muốn
+            HAL_UART_Transmit(&huart2, (uint8_t*)"[OK] Response Found\r\n", 21, 1000);
+            return true;
+        }
+    }
+
+    // Timeout
+    HAL_UART_Transmit(&huart2, (uint8_t*)"[TIMEOUT] No Response\r\n", 23, 1000);
+    return false;
+}
+
+// 5. KẾT NỐI WIFI "LÌ LỢM" (Dựa trên code cũ của bạn)
+void WiFi_Connect_Strict(void) {
+    char cmd[128];
+    Buzzer_Beep(1, 200); // Bíp bắt đầu
+
+    HAL_UART_Transmit(&huart2, (uint8_t*)"\r\n=== STARTING WIFI CONNECT SEQUENCE ===\r\n", 42, 1000);
+
+    // BƯỚC 1: Kiểm tra AT (Lặp đến khi OK)
+    while (1) {
+        if (ESP_SendCommand("AT\r\n", "OK", 1000)) {
+            Buzzer_Beep(1, 50); // Bíp nhẹ xác nhận
+            break;
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Checking AT...\r\n", 16, 1000);
+        HAL_Delay(500); // Thử lại sau 500ms
+    }
+
+    // Reset module cho sạch (Làm 1 lần)
+    ESP_SendCommand("AT+RST\r\n", "ready", 5000);
+    HAL_Delay(2000);
+
+    // Tắt Echo
+    ESP_SendCommand("ATE0\r\n", "OK", 1000);
+
+    // BƯỚC 2: Cài đặt Mode Station (Lặp đến khi OK)
+    while (1) {
+        if (ESP_SendCommand("AT+WMODE=1,1\r\n", "OK", 2000)) {
+            break;
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Setting WMODE...\r\n", 18, 1000);
+        HAL_Delay(1000);
+    }
+
+    // BƯỚC 3: Kết nối Wifi (Lặp đến khi có +EVENT:WIFI_GOT_IP)
+    sprintf(cmd, "AT+WJAP=%s,%s\r\n", WIFI_SSID, WIFI_PASSWORD);
+    while (1) {
+        // Code cũ chờ 20s cho việc kết nối wifi
+        if (ESP_SendCommand(cmd, "+EVENT:WIFI_GOT_IP", 20000)) {
+            Buzzer_Beep(2, 100); // 2 Bíp: Đã có Wifi
+            break;
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Retrying WiFi...\r\n", 18, 1000);
+        Buzzer_Beep(5, 50); // Bíp lỗi
+        HAL_Delay(2000);
+    }
+
+    // BƯỚC 4: Kết nối Server TCP (Lặp đến khi "connect success")
+    sprintf(cmd, "AT+SOCKET=4,%s,%d\r\n", SERVER_IP, SERVER_PORT);
+    while (1) {
+        if (ESP_SendCommand(cmd, "connect success", 5000)) {
+            break;
+        }
+        // Đôi khi nó báo ALREADY CONNECTED nếu reset mềm, cũng coi là OK
+        if (strstr(rx_buffer, "ALREADY CONNECTED") != NULL) {
+            break;
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Retrying Socket...\r\n", 20, 1000);
+        HAL_Delay(2000);
+    }
+
+    // BƯỚC 5: Chế độ Trong Suốt (Transparent Mode) - QUAN TRỌNG NHẤT
+    while (1) {
+        if (ESP_SendCommand("AT+SOCKETTT\r\n", ">", 3000)) {
+            Buzzer_Beep(3, 200); // 3 Bíp dài: THÀNH CÔNG TOÀN BỘ
+            HAL_UART_Transmit(&huart2, (uint8_t*)"Transparent Mode: ACTIVE\r\n", 26, 1000);
+            break;
+        }
+        HAL_UART_Transmit(&huart2, (uint8_t*)"Retrying Transparent...\r\n", 25, 1000);
+        HAL_Delay(1000);
+    }
+
+    // Gửi Handshake ngay sau khi vào chế độ trong suốt
+    char handshake[32];
+    sprintf(handshake, "CONNECT:%s\n", DEVICE_NODE_ID);
+    HAL_UART_Transmit(&huart6, (uint8_t*)handshake, strlen(handshake), 1000);
+}
+
+// Hàm đọc cảm biến (Bạn tự điền logic đọc ADC/DHT vào đây)
+void Read_Sensors(void) {
+    // Giả lập dữ liệu để test
+    // Thực tế bạn dùng HAL_ADC_GetValue, DHT_Read...
+    temp = 30.5;
+    hum = 65.0;
+
+    // Đọc MQ2 (ADC Channel 0 giả định)
+    // HAL_ADC_Start(&hadc1);
+    // if (HAL_ADC_PollForConversion(&hadc1, 100) == HAL_OK) gas_mq2 = HAL_ADC_GetValue(&hadc1);
+    gas_mq2 = 250; // Giả lập chưa cháy
+
+    // Đọc MQ135
+    gas_mq135 = 120;
+
+    // Đọc PIR (GPIO)
+    // motion = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1);
+    motion = 0;
+}
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+  MX_USART6_UART_Init();
+  MX_ADC1_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+
+  // Bắt đầu nhận UART ngắt từ ESP
+  HAL_UART_Receive_IT(&huart6, &rx_byte, 1);
+
+  HAL_UART_Transmit(&huart2, (uint8_t*)"System Booting...\r\n", 19, 1000);
+
+  // GỌI HÀM KẾT NỐI WIFI "LÌ LỢM"
+  WiFi_Connect_Strict();
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+      // 1. Đọc dữ liệu cảm biến
+      Read_Sensors();
+
+      // 2. Đóng gói JSON
+      // Format: {"temp":30.5,"hum":65.0,"gas_mq2":250,"gas_mq135":120,"motion":0}
+      memset(tx_buffer, 0, sizeof(tx_buffer));
+      sprintf(tx_buffer, "{\"temp\":%.1f,\"hum\":%.1f,\"gas_mq2\":%d,\"gas_mq135\":%d,\"motion\":%d}\n",
+              temp, hum, gas_mq2, gas_mq135, motion);
+
+      // 3. GỬI DỮ LIỆU (QUAN TRỌNG: Gửi Raw vì đang ở mode Transparent)
+      // Không dùng AT+CIPSEND ở đây nữa!
+      HAL_UART_Transmit(&huart6, (uint8_t*)tx_buffer, strlen(tx_buffer), 1000);
+      HAL_UART_Transmit(&huart2, (uint8_t*)"[UPLINK] Sent JSON\r\n", 20, 1000);
+
+      // 4. KIỂM TRA MẤT KẾT NỐI
+      // Nếu module bị reset hoặc mất mạng, nó thường nhả ra "CLOSED" hoặc "ERROR" qua UART
+      if (strstr(rx_buffer, "CLOSED") != NULL || strstr(rx_buffer, "ERROR") != NULL) {
+          HAL_UART_Transmit(&huart2, (uint8_t*)"[ERROR] Connection Lost! Reconnecting...\r\n", 42, 1000);
+          Buzzer_Beep(3, 100);
+          WiFi_Connect_Strict(); // Kết nối lại từ đầu
+      }
+
+      // Xóa buffer để tránh đọc lại dữ liệu cũ
+      Clear_RxBuffer();
+
+      // 5. CHỜ (Delay Uplink)
+      HAL_Delay(UPLINK_INTERVAL);
+
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 65535;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief USART6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART6_UART_Init(void)
+{
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : PB3 (Buzzer) */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+}
+
+/* USER CODE BEGIN 4 */
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  * where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

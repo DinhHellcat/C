@@ -1,4 +1,4 @@
-16:07:58 **** Incremental Build of configuration Debug for project 7.1-Combine_test ****
+14:42:31 **** Build of configuration Debug for project 7.1-Combine_test ****
 make -j12 all 
 arm-none-eabi-size  7.1-Combine_test.elf 
    text	   data	    bss	    dec	    hex	filename
@@ -6,5 +6,5 @@ arm-none-eabi-size  7.1-Combine_test.elf
 Finished building: default.size.stdout
  
 
-16:07:58 Build Finished. 0 errors, 0 warnings. (took 255ms)
+14:42:32 Build Finished. 0 errors, 0 warnings. (took 560ms)
 

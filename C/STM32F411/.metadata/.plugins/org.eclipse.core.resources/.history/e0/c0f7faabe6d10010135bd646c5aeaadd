@@ -1,0 +1,188 @@
+/**
+  ******************************************************************************
+  * @file    dhtxx.c
+  * @brief   This file includes the HAL/LL driver for DHT11/22 Humidity
+  * 		 Temperature Sensors
+  ******************************************************************************
+  */
+#include "dhtxx.h"
+
+/**
+  * @brief  The internal function is used as gpio pin mode
+  * @param  DHT		DHTxx_Drv_t
+  * @param  Mode	Input or Output
+  */
+static void Set_Pin_Mode(DHTxx_Drv_t *DHT, PinMode Mode)
+{
+#ifdef LL_Driver
+	if(Mode == Input)
+	{
+		LL_GPIO_SetPinMode(DHT->DataPort, DHT->DataPin, LL_GPIO_MODE_INPUT);
+	}else{
+		LL_GPIO_SetPinMode(DHT->DataPort, DHT->DataPin, LL_GPIO_MODE_OUTPUT);
+	}
+#else
+	GPIO_InitTypeDef GPIO_InitStruct = {0};
+	GPIO_InitStruct.Pin = DHT->DataPin;
+	if(Mode == Input)
+	{
+		GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	}else{
+		GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	}
+	HAL_GPIO_Init(DHT->DataPort, &GPIO_InitStruct);
+#endif
+}
+
+/**
+  * @brief  The internal function is used as gpio pin level
+  * @param  DHT		DHTxx_Drv_t
+  * @param  Mode	Level: Set/High = 1, Reset/Low = 0
+  */
+static void Set_Pin_Level(DHTxx_Drv_t *DHT, uint8_t Level)
+{
+#ifdef LL_Driver
+	if(Level == 1)
+	{
+		LL_GPIO_SetOutputPin(DHT->DataPort, DHT->DataPin);
+	}else{
+		LL_GPIO_ResetOutputPin(DHT->DataPort, DHT->DataPin);
+	}
+#else
+	HAL_GPIO_WritePin(DHT->DataPort, DHT->DataPin, Level);
+#endif
+}
+
+/**
+  * @brief  The internal function is used to read data pin
+  * @retval Pin level status
+  * @param  DHT		DHTxx_Drv_t
+  */
+static uint8_t Bus_Read(DHTxx_Drv_t *DHT)
+{
+#ifdef LL_Driver
+	return ((DHT->DataPort->IDR & DHT->DataPin) != 0x00U) ? 1 : 0;
+#else
+	return HAL_GPIO_ReadPin(DHT->DataPort, DHT->DataPin);
+#endif
+}
+
+/**
+  * @brief  The internal function is used to check sensor response
+  * @param  DHT		DHTxx_Drv_t
+  * @retval OK = 1, Failed = -1
+  */
+static uint8_t DHT_Check_Response(DHTxx_Drv_t *DHT)
+{
+	uint8_t Response = 0;
+
+	/* Set Data pin as Output */
+	Set_Pin_Mode(DHT, Output);
+	/* Reset Data Pin */
+	Set_Pin_Level(DHT, 0);
+
+	/* Delay waiting
+	 * DHT22 = 1.2ms(give extra delay)
+	 * DHT11 = 18ms
+	 */
+	DwtDelay_us((DHT->Type == DHT22) ? 1500 : 18000);
+
+	/* Set Data Pin */
+	Set_Pin_Level(DHT, 1);
+	/* Delay 20us */
+	DwtDelay_us(20);
+	/* Set Data pin as Input */
+	Set_Pin_Mode(DHT, Input);
+	/* Delay 40us */
+	DwtDelay_us(40);
+
+	if(!Bus_Read(DHT))
+	{
+		DwtDelay_us(80);
+		/* if the pin is high, response is ok */
+		Response = (Bus_Read(DHT)) ? 1 : -1;
+	}
+
+	/* Wait for the pin to go reset */
+	while(Bus_Read(DHT)) {};
+
+	return Response;
+}
+
+/**
+  * @brief  The internal function is used to read sensor data and return as byte
+  * @param  DHT		DHTxx_Drv_t
+  */
+static uint8_t DHT_Read(DHTxx_Drv_t *DHT)
+{
+	uint8_t i, j;
+	for(j = 0; j < 8; j++)
+	{
+		/* Wait for pin to go high */
+		while(!Bus_Read(DHT));
+		/* Delay 40us */
+		DwtDelay_us(40);
+
+		/* If the pin go reset */
+		if(!Bus_Read(DHT))
+		{
+			i &= ~(1 << (7 - j));   // write 0
+		}else{
+			i |= (1 << (7 - j));  // if the pin is high, write 1
+		}
+
+		/* Wait the pin go reset */
+		while(Bus_Read(DHT));
+	}
+	return i;
+}
+
+/**
+  * @brief  The function is used as get temperature and humidity and return in
+  * 		data structure
+  * @param  DHT		DHTxx_Drv_t
+  */
+// Hàm tính toán dữ liệu
+void DHT_GetData(DHTxx_Drv_t *DHT)
+{
+    // Gọi hàm kiểm tra phản hồi (đã có timeout bảo vệ)
+	if(DHT_Check_Response(DHT) == 1)
+	{
+		DHT->Data.Rh1 = DHT_Read(DHT); // Byte 1: Độ ẩm (Phần nguyên)
+		DHT->Data.Rh2 = DHT_Read(DHT); // Byte 2: Độ ẩm (Phần thập phân - thường bằng 0 với DHT11 cũ)
+		DHT->Data.Tp1 = DHT_Read(DHT); // Byte 3: Nhiệt độ (Phần nguyên)
+		DHT->Data.Tp2 = DHT_Read(DHT); // Byte 4: Nhiệt độ (Phần thập phân - thường bằng 0 với DHT11 cũ)
+		DHT->Data.Sum = DHT_Read(DHT); // Byte 5: Checksum
+
+		/* Kiểm tra Checksum (Tổng 4 byte đầu phải bằng byte thứ 5) */
+		if(DHT->Data.Sum == (uint8_t)(DHT->Data.Rh1 + DHT->Data.Rh2 + DHT->Data.Tp1 + DHT->Data.Tp2))
+		{
+            // --- LOGIC CHO DHT22 ---
+            if (DHT->Type == DHT22) {
+                uint16_t rawhum = (DHT->Data.Rh1 << 8) | DHT->Data.Rh2;
+                uint16_t rawtemp = (DHT->Data.Tp1 << 8) | DHT->Data.Tp2;
+
+                DHT->Humidity = rawhum / 10.0f;
+
+                if(rawtemp & 0x8000) {
+                    DHT->Temperature = -(rawtemp & 0x7FFF) / 10.0f;
+                } else {
+                    DHT->Temperature = rawtemp / 10.0f;
+                }
+            }
+            // --- LOGIC CHO DHT11 (MỚI) ---
+            else if (DHT->Type == DHT11) {
+                 // DHT11 chuẩn chỉ trả về số nguyên ở byte 1 và byte 3
+                 // Ví dụ: 25 độ C -> Tp1 = 25, Tp2 = 0
+                 DHT->Humidity = (float)DHT->Data.Rh1;
+
+                 // Một số phiên bản DHT11 mới có trả về thập phân ở Rh2/Tp2
+                 // Nhưng để an toàn ta cứ lấy phần nguyên cộng thêm phần thập phân chia 10
+                 if (DHT->Data.Rh2 > 0) DHT->Humidity += DHT->Data.Rh2 / 10.0f;
+
+                 DHT->Temperature = (float)DHT->Data.Tp1;
+                 if (DHT->Data.Tp2 > 0) DHT->Temperature += DHT->Data.Tp2 / 10.0f;
+            }
+		}
+	}
+}

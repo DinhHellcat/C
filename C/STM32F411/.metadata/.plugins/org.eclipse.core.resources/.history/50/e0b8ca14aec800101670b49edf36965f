@@ -1,0 +1,324 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Project 11.1_DHTwithHotspot - Step 1: Ring Buffer Test
+  * @author         : Gemini Partner
+  * @version        : 1.1 (Ring Buffer Integrated)
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "i2c_lcd.h"
+#include "dhtxx.h"
+#include "dwt.h"
+#include <stdio.h>
+#include <string.h>
+
+/* USER CODE BEGIN Includes */
+#include "ring_buffer.h" // Thư viện bộ đệm vòng mới thêm
+/* USER CODE END Includes */
+
+/* Private defines -----------------------------------------------------------*/
+#define WIFI_SSID       "Herukyatto"
+#define WIFI_PASSWORD   "1234567890"
+#define LOCAL_API_IP    "10.13.71.41"
+#define LOCAL_API_PORT  5000
+
+#define MAIN_LOGIC_INTERVAL 1000
+#define API_SEND_INTERVAL   10000
+
+/* Private typedef -----------------------------------------------------------*/
+typedef enum {
+    APP_STATE_INIT,
+    APP_STATE_WIFI_CONNECT,
+    APP_STATE_RUNNING
+} AppState_t;
+
+/* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+TIM_HandleTypeDef htim4; // Dùng cho "nhịp tim" hệ thống
+UART_HandleTypeDef huart6; // Dùng cho WiFi Module
+
+I2C_LCD_HandleTypeDef lcd;
+DHTxx_Drv_t dht22;
+
+// --- Biến cho hệ thống ---
+volatile uint32_t ms_ticks = 0;
+
+// --- Biến Ring Buffer (MỚI) ---
+RingBuffer wifi_rb;      // Thùng chứa dữ liệu
+uint8_t rx_data_temp;    // Biến tạm để hứng từng byte từ ngắt UART
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_USART6_UART_Init(void);
+
+void Error_Handler(void);
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* --- 1. KHỞI TẠO CƠ BẢN --- */
+  HAL_Init();
+  SystemClock_Config();
+
+  /* --- 2. KHỞI TẠO CÁC NGOẠI VI --- */
+  MX_GPIO_Init();
+  MX_I2C1_Init();
+  MX_TIM4_Init();
+  MX_USART6_UART_Init();
+
+  /* --- 3. KHỞI TẠO CÁC THƯ VIỆN --- */
+  DwtInit();
+
+  // --- Khởi tạo LCD ---
+  lcd.hi2c = &hi2c1;
+  lcd.address = 0x4E; // Kiểm tra lại địa chỉ nếu LCD không lên (thường là 0x27 hoặc 0x3F, 0x4E)
+  lcd_init(&lcd);
+  lcd_clear(&lcd);
+  lcd_puts(&lcd, "System Init...");
+  HAL_Delay(1000);
+
+  // --- Khởi tạo Ring Buffer (QUAN TRỌNG) ---
+  RB_Init(&wifi_rb);
+
+  // Kích hoạt ngắt nhận UART lần đầu tiên
+  // Dữ liệu nhận được sẽ nhảy vào hàm HAL_UART_RxCpltCallback ở cuối file
+  HAL_UART_Receive_IT(&huart6, &rx_data_temp, 1);
+
+  lcd_clear(&lcd);
+  lcd_puts(&lcd, "Buffer Ready!");
+  HAL_Delay(1000);
+
+  // Khởi tạo DHT22 (Để sẵn, chưa dùng trong test này)
+  dht22.DataPort = DHT22_GPIO_Port;
+  dht22.DataPin = DHT22_Pin;
+  dht22.Type = DHT22;
+
+  // Bắt đầu Timer nhịp tim
+  HAL_TIM_Base_Start_IT(&htim4);
+
+  /* --- 4. VÒNG LẶP CHÍNH (TEST MODE) --- */
+  while (1)
+  {
+      // --- PHẦN CODE TEST BUFFER ---
+
+      // 1. Gửi lệnh AT đơn giản mỗi 2 giây
+      static uint32_t last_send = 0;
+      if (HAL_GetTick() - last_send > 2000) {
+          last_send = HAL_GetTick();
+
+          // Gửi lệnh AT để kiểm tra module sống hay chết
+          char *cmd = "AT\r\n";
+          HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 100);
+
+          lcd_clear(&lcd);
+          lcd_puts(&lcd, "Sent: AT");
+      }
+
+      // 2. Kiểm tra Buffer liên tục xem có gì trả về không
+      // Cơ chế: UART nhận -> Ngắt -> Bỏ vào Ring Buffer -> Main loop lấy ra in
+      uint8_t data;
+      static int lcd_col = 0;
+
+      // Nếu trong thùng có dữ liệu (Module WiFi trả lời)
+      while (RB_Get(&wifi_rb, &data)) {
+          // Khi bắt đầu nhận ký tự đầu tiên, xóa dòng 2 để in mới
+          if (lcd_col == 0) {
+              lcd_gotoxy(&lcd, 0, 1);
+              // Xóa dòng 2 bằng khoảng trắng thủ công cho nhanh
+              lcd_puts(&lcd, "                ");
+              lcd_gotoxy(&lcd, 0, 1);
+          }
+
+          // Chỉ in ký tự đọc được (bỏ qua ký tự xuống dòng \r \n để màn hình đẹp hơn)
+          if (data >= 32 && data <= 126) {
+              char str[2] = {data, '\0'};
+              lcd_puts(&lcd, str);
+              lcd_col++;
+
+              // Nếu tràn màn hình (16 ký tự) thì reset về 0 để in đè lại từ đầu
+              if (lcd_col > 15) lcd_col = 0;
+          }
+      }
+  }
+}
+
+/* ============================================================================== */
+/* KHU VỰC CODE CŨ (ĐÃ TẮT)                               */
+/* (Gồm Logic State Machine, HTTP cũ - Giữ lại để tham khảo)            */
+/* ============================================================================== */
+#if 0
+/*
+// Biến cũ
+AppState_t app_state = APP_STATE_INIT;
+uint32_t last_main_logic_time = 0;
+uint32_t last_api_send_time = 0;
+float temperature = 0.0f, humidity = 0.0f;
+char response_buffer[256];
+uint8_t response_index = 0;
+
+// Hàm send_at_command cũ (Blocking)
+static int send_at_command(const char* command, const char* expected_response, uint32_t timeout)
+{
+    memset(response_buffer, 0, sizeof(response_buffer));
+    response_index = 0;
+    HAL_UART_Transmit(&huart6, (uint8_t*)command, strlen(command), 1000);
+
+    uint32_t start_time = HAL_GetTick();
+    while (HAL_GetTick() - start_time < timeout)
+    {
+        if (strstr(response_buffer, expected_response) != NULL) return 1;
+        HAL_Delay(10);
+    }
+    return 0;
+}
+
+// Trong while(1) cũ:
+    switch (app_state)
+    {
+        case APP_STATE_WIFI_CONNECT:
+            // ... Code kết nối wifi cũ ...
+            break;
+        case APP_STATE_RUNNING:
+            // ... Code gửi HTTP cũ ...
+            break;
+    }
+*/
+#endif
+/* ============================================================================== */
+
+
+/* --- CÁC HÀM KHỞI TẠO NGOẠI VI (MX_...) --- */
+
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK) Error_Handler();
+}
+
+static void MX_I2C1_Init(void)
+{
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
+}
+
+static void MX_TIM4_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 99;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 999;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK) Error_Handler();
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK) Error_Handler();
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK) Error_Handler();
+}
+
+static void MX_USART6_UART_Init(void)
+{
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) Error_Handler();
+}
+
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  GPIO_InitStruct.Pin = DHT22_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+/* --- CALLBACKS & INTERRUPTS --- */
+
+/**
+  * @brief  Callback được gọi mỗi khi một Timer kết thúc chu kỳ đếm.
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM4)
+  {
+    ms_ticks++;
+  }
+}
+
+/**
+  * @brief  Callback nhận UART (QUAN TRỌNG NHẤT BƯỚC NÀY)
+  * Đây là nơi "hứng" dữ liệu vào thùng chứa Ring Buffer
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART6) // Nếu là UART nối với WiFi
+  {
+    // 1. Bỏ dữ liệu vừa nhận vào thùng (Ring Buffer)
+    RB_Put(&wifi_rb, rx_data_temp);
+
+    // 2. Tiếp tục lắng nghe byte tiếp theo ngay lập tức
+    HAL_UART_Receive_IT(&huart6, &rx_data_temp, 1);
+  }
+}
+
+void Error_Handler(void)
+{
+  __disable_irq();
+  while (1) {}
+}

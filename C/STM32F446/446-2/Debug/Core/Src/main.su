@@ -1,0 +1,12 @@
+../Core/Src/main.c:46:6:AT_Send_And_Wait	40	static
+../Core/Src/main.c:70:6:WiFi_Connect_Polling	168	static
+../Core/Src/main.c:118:6:WiFi_Send_Raw	16	static
+../Core/Src/main.c:125:6:Control_Device	24	static
+../Core/Src/main.c:145:6:WiFi_Check_Downlink	56	static
+../Core/Src/main.c:164:6:annouce_buzzer	16	static
+../Core/Src/main.c:174:5:main	56	static
+../Core/Src/main.c:241:6:SystemClock_Config	88	static
+../Core/Src/main.c:264:13:MX_ADC1_Init	24	static
+../Core/Src/main.c:284:13:MX_USART6_UART_Init	8	static
+../Core/Src/main.c:295:13:MX_GPIO_Init	32	static
+../Core/Src/main.c:309:6:Error_Handler	4	static,ignoring_inline_asm

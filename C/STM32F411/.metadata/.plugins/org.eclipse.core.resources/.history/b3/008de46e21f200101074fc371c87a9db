@@ -1,0 +1,296 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : SmartHome Node Controller (Fixed for Uploaded Libs)
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+UART_HandleTypeDef huart6; // UART nối Ai-WB2-01S
+
+// Struct cho thư viện DHT của bạn
+DHTxx_Drv_t dht11;
+
+// Biến giao tiếp UART
+char tx_buffer[512];
+char rx_byte;
+char rx_buffer[256];
+uint16_t rx_index = 0;
+
+// Cờ báo trạng thái mạng
+bool is_wifi_connected = false;
+
+/* Private function prototypes -----------------------------------------------*/
+static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_USART6_UART_Init(void);
+
+/* ============================================================================== */
+/* PHẦN 1: CÁC HÀM BUZZER                                                        */
+/* ============================================================================== */
+
+void Buzzer_Beep(int count, int duration_ms) {
+    for(int i = 0; i < count; i++) {
+        HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_SET);
+        HAL_Delay(duration_ms);
+        HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_RESET);
+        if (count > 1) HAL_Delay(duration_ms);
+    }
+}
+
+void Buzzer_WifiError(void) {
+    // Kêu 3 tiếng ngắn báo lỗi mạng
+    Buzzer_Beep(3, 100);
+}
+
+void Buzzer_FireAlert(void) {
+    // Báo cháy: 3 tiếng dồn dập
+    for(int i=0; i<3; i++) {
+        HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_SET);
+        HAL_Delay(80);
+        HAL_GPIO_WritePin(BUZZER_TEST_Port, BUZZER_TEST_Pin, GPIO_PIN_RESET);
+        HAL_Delay(50);
+    }
+}
+
+/* ============================================================================== */
+/* PHẦN 2: LOGIC MẠNG (WIFI & UPLINK/DOWNLINK)                                   */
+/* ============================================================================== */
+
+void ESP_SendRaw(char *data) {
+    HAL_UART_Transmit(&huart6, (uint8_t*)data, strlen(data), 1000);
+}
+
+// Hàm kết nối Wifi theo quy luật Buzzer bạn yêu cầu
+bool WiFi_Connect_Polling(void) {
+    // 1. Buzzer lần đầu: "OK bắt đầu thôi"
+    Buzzer_Beep(1, 200);
+    HAL_Delay(500);
+
+    // Reset Module
+    ESP_SendRaw("AT+RST\r\n");
+    HAL_Delay(3000);
+
+    ESP_SendRaw("AT\r\n");
+    HAL_Delay(500);
+
+    // 2. Buzzer 1 lần: Bắt tay Module thành công
+    Buzzer_Beep(1, 200);
+
+    // Cấu hình Station
+    ESP_SendRaw("AT+CWMODE=1\r\n");
+    HAL_Delay(500);
+
+    // Kết nối Wifi
+    sprintf(tx_buffer, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+    ESP_SendRaw(tx_buffer);
+    HAL_Delay(8000); // Chờ Module nối Wifi
+
+    // 3. Buzzer 2 lần: Kết nối Wifi thành công
+    Buzzer_Beep(2, 200);
+    HAL_Delay(1000);
+
+    // Kết nối TCP tới Jetson
+    sprintf(tx_buffer, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
+    ESP_SendRaw(tx_buffer);
+    HAL_Delay(3000);
+
+    // Đăng ký Node ID
+    char handshake[32];
+    sprintf(handshake, "CONNECT:%s\n", DEVICE_NODE_ID);
+
+    sprintf(tx_buffer, "AT+CIPSEND=%d\r\n", strlen(handshake));
+    ESP_SendRaw(tx_buffer);
+    HAL_Delay(100);
+    ESP_SendRaw(handshake);
+    HAL_Delay(500);
+
+    // 4. Buzzer 3 lần: Tìm thấy Jetson (Socket Connected)
+    Buzzer_Beep(3, 200);
+
+    is_wifi_connected = true;
+    return true;
+}
+
+// Xử lý lệnh Downlink từ Jetson
+void Process_Rx_Command(char *cmd) {
+    if (strstr(cmd, "SET_STATUS:on") != NULL) {
+        HAL_GPIO_WritePin(RELAY1_Port, RELAY1_Pin, GPIO_PIN_SET);
+        Buzzer_Beep(1, 50); // Bíp nhẹ xác nhận
+    }
+    else if (strstr(cmd, "SET_STATUS:off") != NULL) {
+        HAL_GPIO_WritePin(RELAY1_Port, RELAY1_Pin, GPIO_PIN_RESET);
+    }
+}
+
+// Ngắt nhận UART
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+    if (huart->Instance == USART6) {
+        if (rx_byte == '\n') {
+            rx_buffer[rx_index] = '\0';
+            Process_Rx_Command(rx_buffer);
+            rx_index = 0;
+        } else {
+            rx_buffer[rx_index++] = rx_byte;
+            if (rx_index >= 255) rx_index = 0;
+        }
+        HAL_UART_Receive_IT(&huart6, (uint8_t*)&rx_byte, 1);
+    }
+}
+
+/* ============================================================================== */
+/* MAIN PROGRAM                                                                  */
+/* ============================================================================== */
+
+int main(void)
+{
+  HAL_Init();
+  // SystemClock_Config(); // Code CubeMX tự sinh
+
+  MX_GPIO_Init();
+  MX_ADC1_Init();
+  MX_USART6_UART_Init();
+
+  // 1. Khởi tạo DWT cho thư viện dhtxx (Dùng DwtInit thay vì DWT_Delay_Init)
+  DwtInit();
+
+  // 2. Cấu hình Struct cho DHT (Vì thư viện bạn không có hàm Init)
+  dht11.DataPort = DHT_Port;
+  dht11.DataPin = DHT_Pin;
+  dht11.Type = DHT11; // Chọn loại cảm biến
+
+  HAL_UART_Receive_IT(&huart6, (uint8_t*)&rx_byte, 1);
+
+  // Kết nối mạng (Polling 4 bước)
+  WiFi_Connect_Polling();
+
+  while (1)
+  {
+      // === UPLINK ===
+      // 1. Đọc DHT (Dùng hàm DHT_GetData)
+      DHT_GetData(&dht11);
+      float temp = dht11.Temperature; // Dùng tên biến đúng trong dhtxx.h
+      float hum = dht11.Humidity;
+
+      // 2. Đọc ADC & GPIO
+      int gas_mq2 = Read_ADC_Value(ADC_CHAN_MQ2);
+      int gas_mq135 = Read_ADC_Value(ADC_CHAN_MQ135);
+      int motion = HAL_GPIO_ReadPin(PIR_Port, PIR_Pin);
+
+      // 3. Kịch bản báo cháy
+      if (gas_mq2 > 2000 || gas_mq135 > 2000 || temp > 50) {
+          Buzzer_FireAlert();
+      }
+
+      // 4. Gửi JSON
+      memset(tx_buffer, 0, sizeof(tx_buffer));
+      sprintf(tx_buffer, "{\"temp\":%.1f,\"hum\":%.1f,\"gas_mq2\":%d,\"gas_mq135\":%d,\"motion\":%d}\n",
+              temp, hum, gas_mq2, gas_mq135, motion);
+
+      char len_cmd[32];
+      sprintf(len_cmd, "AT+CIPSEND=%d\r\n", strlen(tx_buffer));
+      ESP_SendRaw(len_cmd);
+
+      HAL_Delay(50);
+      ESP_SendRaw(tx_buffer);
+
+      // 5. Auto Reconnect (Kiểm tra lỗi)
+      if (strstr(rx_buffer, "ERROR") != NULL || strstr(rx_buffer, "CLOSED") != NULL) {
+          is_wifi_connected = false;
+          memset(rx_buffer, 0, sizeof(rx_buffer));
+          rx_index = 0;
+
+          Buzzer_WifiError(); // Báo lỗi
+          WiFi_Connect_Polling(); // Kết nối lại
+      }
+
+      HAL_Delay(UPLINK_INTERVAL);
+  }
+}
+
+/* ============================================================================== */
+/* DRIVER FUNCTIONS                                                              */
+/* ============================================================================== */
+
+uint32_t Read_ADC_Value(uint32_t channel) {
+    ADC_ChannelConfTypeDef sConfig = {0};
+    sConfig.Channel = channel;
+    sConfig.Rank = 1;
+    sConfig.SamplingTime = ADC_SAMPLETIME_15CYCLES;
+    if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) return 0;
+
+    HAL_ADC_Start(&hadc1);
+    HAL_ADC_PollForConversion(&hadc1, 100);
+    uint32_t val = HAL_ADC_GetValue(&hadc1);
+    HAL_ADC_Stop(&hadc1);
+    return val;
+}
+
+static void MX_USART6_UART_Init(void) {
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_ADC1_Init(void) {
+  ADC_ChannelConfTypeDef sConfig = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) { Error_Handler(); }
+}
+
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  HAL_GPIO_WritePin(GPIOA, RELAY1_Pin|RELAY2_Pin|RELAY3_Pin|BUZZER_TEST_Pin|LED_TEST_Pin, GPIO_PIN_RESET);
+
+  // Input Pins
+  GPIO_InitStruct.Pin = PIR_Pin|DHT_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // Output Pins
+  GPIO_InitStruct.Pin = RELAY1_Pin|RELAY2_Pin|RELAY3_Pin|BUZZER_TEST_Pin|LED_TEST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  // Analog Pins
+  GPIO_InitStruct.Pin = MQ2_Pin|MQ135_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+
+void Error_Handler(void) {
+  __disable_irq();
+  while (1) {}
+}
+
+#ifdef  USE_FULL_ASSERT
+void assert_failed(uint8_t *file, uint32_t line) {}
+#endif

@@ -1,4 +1,4 @@
-00:35:41 **** Incremental Build of configuration Debug for project 9-Wifi_with_Local_API ****
+14:42:34 **** Build of configuration Debug for project 9-Wifi_with_Local_API ****
 make -j12 all 
 arm-none-eabi-size  9-Wifi_with_Local_API.elf 
    text	   data	    bss	    dec	    hex	filename
@@ -6,5 +6,5 @@ arm-none-eabi-size  9-Wifi_with_Local_API.elf
 Finished building: default.size.stdout
  
 
-00:35:42 Build Finished. 0 errors, 0 warnings. (took 250ms)
+14:42:34 Build Finished. 0 errors, 0 warnings. (took 355ms)
 

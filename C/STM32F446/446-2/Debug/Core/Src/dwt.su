@@ -1,0 +1,5 @@
+../Core/Src/dwt.c:25:6:DwtInit	4	static
+../Core/Src/dwt.c:46:6:DwtStart	4	static
+../Core/Src/dwt.c:55:7:DwtInterval	4	static
+../Core/Src/dwt.c:64:6:DwtDelay_us	16	static
+../Core/Src/dwt.c:75:6:DwtDelay_ms	16	static

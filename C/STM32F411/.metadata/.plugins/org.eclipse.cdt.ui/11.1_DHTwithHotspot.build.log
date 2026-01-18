@@ -1,0 +1,10 @@
+11:29:03 **** Incremental Build of configuration Debug for project 11.1_DHTwithHotspot ****
+make -j12 all 
+arm-none-eabi-size  11.1_DHTwithHotspot.elf 
+   text	   data	    bss	    dec	    hex	filename
+  34932	    468	   3220	  38620	   96dc	11.1_DHTwithHotspot.elf
+Finished building: default.size.stdout
+ 
+
+11:29:03 Build Finished. 0 errors, 0 warnings. (took 671ms)
+

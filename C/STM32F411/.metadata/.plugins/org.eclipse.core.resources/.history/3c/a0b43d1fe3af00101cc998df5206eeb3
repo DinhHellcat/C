@@ -1,0 +1,542 @@
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Chương trình chính cho hệ thống nhà thông minh (Phiên bản mini project)
+  * @author         :
+  * @version        : 1.0
+  ******************************************************************************
+  * @attention
+  *
+  * Đây là phiên bản tổng hợp, kết hợp các kỹ thuật:
+  * - Lập trình không-chặn (Non-blocking) sử dụng Timer Interrupt (TIM4).
+  * - Đọc ADC hiệu năng cao với DMA ở chế độ Circular.
+  * - Giao tiếp UART không-chặn với WiFi module sử dụng Interrupt.
+  * - Điều khiển Servo bằng PWM.
+  * - Tích hợp các cảm biến: DHT22, PIR, MQ-2, MQ-135.
+  * - Hiển thị thông tin qua I2C LCD.
+  * - Máy trạng thái (State Machine) để quản lý logic chương trình.
+  *
+  ******************************************************************************
+  */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "i2c_lcd.h"
+#include "dhtxx.h"
+#include "dwt.h"
+#include <stdio.h>
+#include <string.h>
+
+/* Private defines -----------------------------------------------------------*/
+#define WIFI_SSID       "Herukyatto"
+#define WIFI_PASSWORD   "1234567890"
+#define LOCAL_API_IP    "10.13.29.15"
+#define LOCAL_API_PORT  5000
+
+#define GAS_ALARM_THRESHOLD 1500 // Ngưỡng cảnh báo gas
+#define MAIN_LOGIC_INTERVAL 1000 // Thời gian thực thi logic chính (ms)
+#define API_SEND_INTERVAL   10000 // Thời gian giữa 2 lần gửi API (ms)
+
+/* Private typedef -----------------------------------------------------------*/
+typedef enum {
+    APP_STATE_INIT,
+    APP_STATE_WIFI_CONNECT,
+    APP_STATE_RUNNING
+} AppState_t;
+
+/* Private variables ---------------------------------------------------------*/
+// --- Handles cho các ngoại vi và thư viện ---
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+I2C_HandleTypeDef hi2c1;
+TIM_HandleTypeDef htim2; // Dùng cho Servo PWM
+TIM_HandleTypeDef htim4; // Dùng cho "nhịp tim" hệ thống
+UART_HandleTypeDef huart6; // Dùng cho WiFi Module
+
+I2C_LCD_HandleTypeDef lcd;
+DHTxx_Drv_t dht22;
+
+// --- Biến cho hệ thống và logic không-chặn ---
+volatile uint32_t ms_ticks = 0; // Biến "nhịp tim", được tăng trong ngắt TIM4
+uint32_t last_main_logic_time = 0;
+uint32_t last_api_send_time = 0;
+AppState_t app_state = APP_STATE_INIT;
+
+// --- Biến lưu giá trị cảm biến ---
+float temperature = 0.0f, humidity = 0.0f;
+uint32_t pir_state = 0;
+uint32_t adc_dma_buffer[2]; // Buffer cho DMA: [0] = MQ-2, [1] = MQ-135
+
+// --- Biến cho giao tiếp UART ---
+uint8_t uart_rx_byte;
+char response_buffer[256];
+uint8_t response_index = 0;
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_USART6_UART_Init(void);
+
+static void Manual_DMA_Link_Init(void); // Hàm khắc phục lỗi liên kết DMA
+static int send_at_command(const char* command, const char* expected_response, uint32_t timeout);
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* --- 1. KHỞI TẠO CƠ BẢN --- */
+  HAL_Init();
+  SystemClock_Config();
+
+  /* --- 2. KHỞI TẠO CÁC NGOẠI VI --- */
+  MX_GPIO_Init();
+  MX_DMA_Init();
+  MX_ADC1_Init();
+  MX_I2C1_Init();
+  MX_TIM2_Init();
+  MX_TIM4_Init();
+  MX_USART6_UART_Init();
+
+  /* --- 3. KHỞI TẠO CÁC THƯ VIỆN VÀ TIẾN TRÌNH NỀN --- */
+  DwtInit(); // Khởi tạo DWT cho các hàm delay us
+
+  // Khởi tạo LCD
+  lcd.hi2c = &hi2c1;
+  lcd.address = 0x4E;
+  lcd_init(&lcd);
+  lcd_puts(&lcd, "System Init...");
+
+  // Khởi tạo DHT22
+  dht22.DataPort = DHT22_GPIO_Port;
+  dht22.DataPin = DHT22_Pin;
+  dht22.Type = DHT22;
+
+  // Sửa lỗi liên kết ADC-DMA và bắt đầu đọc
+  Manual_DMA_Link_Init();
+  HAL_ADC_Start_DMA(&hadc1, adc_dma_buffer, 2);
+
+  // Bắt đầu các tiến trình không-chặn
+  HAL_TIM_Base_Start_IT(&htim4);          // Bắt đầu "nhịp tim" hệ thống
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3); // Bắt đầu PWM cho servo
+  HAL_UART_Receive_IT(&huart6, &uart_rx_byte, 1); // Bắt đầu lắng nghe UART
+
+  // Thiết lập trạng thái ban đầu
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 500); // Servo ở vị trí 0 độ (đóng)
+  app_state = APP_STATE_WIFI_CONNECT;
+
+  /* --- 4. VÒNG LẶP CHÍNH (SUPER LOOP) --- */
+  while (1)
+  {
+    /* Vòng lặp này chạy cực nhanh và không bị chặn bởi bất kỳ hàm delay nào.
+     * Mọi logic đều được quản lý bởi máy trạng thái và các mốc thời gian.
+     */
+    switch (app_state)
+    {
+        case APP_STATE_WIFI_CONNECT:
+        {
+        	lcd_clear(&lcd);
+        	lcd_puts(&lcd, "Checking AT...");
+        	if (send_at_command("AT\r\n", "OK", 1000)) {
+        	    lcd_gotoxy(&lcd, 0, 1);
+        	    lcd_puts(&lcd, "AT OK");
+        	} else {
+        	    lcd_gotoxy(&lcd, 0, 1);
+        	    lcd_puts(&lcd, "AT FAIL");
+        	    while(1); // Dừng ở đây nếu AT cơ bản lỗi
+        	}
+        	HAL_Delay(1000);
+
+        	lcd_clear(&lcd);
+        	lcd_puts(&lcd, "Checking GMR...");
+        	if (send_at_command("AT+GMR\r\n", "OK", 2000)) { // Chờ phản hồi version
+        	    lcd_gotoxy(&lcd, 0, 1);
+        	    // Chỉ hiển thị 16 ký tự đầu của response_buffer (chứa version)
+        	    char version_info[17];
+        	    strncpy(version_info, response_buffer, 16);
+        	    version_info[16] = '\0';
+        	    lcd_puts(&lcd, version_info);
+        	} else {
+        	    lcd_gotoxy(&lcd, 0, 1);
+        	    lcd_puts(&lcd, "GMR FAIL");
+        	     while(1); // Dừng ở đây nếu GMR lỗi
+        	}
+        	HAL_Delay(2000);
+
+            lcd_clear(&lcd);
+            lcd_puts(&lcd, "Resetting");
+
+            send_at_command("AT+RST\r\n", "ready", 5000);
+			HAL_Delay(2000); // Chờ module khởi động lại
+			send_at_command("ATE0\r\n", "OK", 1000);
+			HAL_Delay(500);
+			send_at_command("AT+WMODE=1,1\r\n", "OK", 3000); // Đặt làm Station Mode
+			HAL_Delay(500);
+
+			lcd_clear(&lcd);
+			lcd_puts(&lcd, "Connecting WiFi...");
+
+			char connect_cmd[100];
+			sprintf(connect_cmd, "AT+WJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+
+			// Tăng timeout lên một chút để chắc chắn hơn
+			if (send_at_command(connect_cmd, "+EVENT:WIFI_GOT_IP", 20000)) // Tăng lên 20 giây
+			{
+				lcd_clear(&lcd);
+				lcd_puts(&lcd, "WiFi Connected!");
+				HAL_Delay(2000);
+				app_state = APP_STATE_RUNNING;
+				last_main_logic_time = ms_ticks;
+				last_api_send_time = ms_ticks;
+			}
+			else
+			{
+				lcd_clear(&lcd);
+				lcd_puts(&lcd, "WiFi Failed!");
+				lcd_gotoxy(&lcd, 0, 1);
+				// Hiển thị một phần buffer lỗi lên dòng 2 LCD
+				// response_buffer có thể rất dài, chỉ hiển thị 16 ký tự đầu
+				char error_msg[17];
+				strncpy(error_msg, response_buffer, 16);
+				error_msg[16] = '\0'; // Đảm bảo chuỗi kết thúc null
+				lcd_puts(&lcd, error_msg);
+
+				HAL_Delay(5000); // Chờ 5 giây trước khi thử lại
+			}
+			break;
+		}
+
+        case APP_STATE_RUNNING:
+        {
+            // Logic chính chỉ thực thi định kỳ, không làm liên tục
+            if (ms_ticks - last_main_logic_time >= MAIN_LOGIC_INTERVAL)
+            {
+                last_main_logic_time = ms_ticks;
+
+                // --- 1. ĐỌC DỮ LIỆU CẢM BIẾN ---
+                DHT_GetData(&dht22);
+                temperature = dht22.Temperature;
+                humidity = dht22.Humidity;
+                pir_state = HAL_GPIO_ReadPin(PIR_GPIO_Port, PIR_Pin);
+                uint32_t mq2_val = adc_dma_buffer[0];
+                uint32_t mq135_val = adc_dma_buffer[1];
+
+                char line1_str[20], line2_str[20];
+
+                // --- 2. XỬ LÝ LOGIC ƯU TIÊN (STATE MACHINE) ---
+                if (mq2_val > GAS_ALARM_THRESHOLD) // Ưu tiên 1: Cảnh báo gas
+                {
+                    HAL_GPIO_WritePin(LED_ON_BOARD_GPIO_Port, LED_ON_BOARD_Pin, GPIO_PIN_SET);
+                    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1500); // Mở cửa
+                    sprintf(line1_str, "GAS DETECTED!");
+                    sprintf(line2_str, "Value: %lu", mq2_val);
+                }
+                else if (pir_state == GPIO_PIN_SET) // Ưu tiên 2: Có chuyển động
+                {
+                    HAL_GPIO_WritePin(LED_ON_BOARD_GPIO_Port, LED_ON_BOARD_Pin, GPIO_PIN_SET);
+                    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 1500); // Mở cửa
+                    sprintf(line1_str, "Motion Detected");
+                    sprintf(line2_str, "Door Opened");
+                }
+                else // Trạng thái bình thường
+                {
+                    HAL_GPIO_WritePin(LED_ON_BOARD_GPIO_Port, LED_ON_BOARD_Pin, GPIO_PIN_RESET);
+                    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_3, 500); // Đóng cửa
+                    sprintf(line1_str, "Temp: %.1f C", temperature);
+                    sprintf(line2_str, "Humi: %.1f %%", humidity);
+                }
+
+                // --- 3. CẬP NHẬT LCD ---
+                lcd_clear(&lcd);
+                lcd_puts(&lcd, line1_str);
+                lcd_gotoxy(&lcd, 0, 1);
+                lcd_puts(&lcd, line2_str);
+            }
+
+            // Logic gửi API cũng thực thi định kỳ và độc lập
+            if (ms_ticks - last_api_send_time >= API_SEND_INTERVAL)
+            {
+                last_api_send_time = ms_ticks;
+
+                // Chuẩn bị payload JSON
+                char json_payload[100];
+                sprintf(json_payload, "{\\\"temperature\\\":%.1f,\\\"humidity\\\":%.1f}", temperature, humidity);
+
+                // Chuẩn bị lệnh HTTP
+                char http_cmd[300];
+                sprintf(http_cmd, "AT+HTTPCLIENTLINE=1,3,\"application/json\",\"%s\",%d,\"/api/data\",\"%s\"\r\n",
+                        LOCAL_API_IP, LOCAL_API_PORT, json_payload);
+
+                // Gửi và hiển thị trạng thái
+                lcd_gotoxy(&lcd, 12, 1); // Vị trí góc phải dưới
+                if(send_at_command(http_cmd, "OK", 10000)) {
+                    lcd_puts(&lcd, "->OK");
+                } else {
+                    lcd_puts(&lcd, "->FAIL");
+                }
+            }
+            break;
+        }
+
+        case APP_STATE_INIT:
+        default:
+            // Trạng thái khởi tạo, không làm gì cả, chờ chuyển sang WIFI_CONNECT
+            break;
+    }
+  }
+}
+
+/* --- CÁC HÀM KHỞI TẠO NGOẠI VI (MX_...) --- */
+// (Giữ nguyên các hàm MX_... đã được tạo từ các project trước, tôi tổng hợp lại đây)
+
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI; // CHỌN HSI
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI; // NGUỒN CHO PLL LÀ HSI
+  RCC_OscInitStruct.PLL.PLLM = 8; // 16MHz / 8 = 2MHz
+  RCC_OscInitStruct.PLL.PLLN = 100; // 2MHz * 100 = 200MHz
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2; // 200MHz / 2 = 100MHz (SYSCLK)
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK; // LẤY XUNG TỪ PLL
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+static void MX_ADC1_Init(void)
+{
+  ADC_ChannelConfTypeDef sConfig = {0};
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK) Error_Handler();
+
+  sConfig.Channel = ADC_CHANNEL_0; // MQ-2 on PA0
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_84CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
+
+  sConfig.Channel = ADC_CHANNEL_1; // MQ-135 on PA1
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK) Error_Handler();
+}
+
+static void MX_I2C1_Init(void)
+{
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.ClockSpeed = 100000;
+  hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
+}
+
+static void MX_TIM2_Init(void) // Servo PWM Timer
+{
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 99;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 19999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) Error_Handler();
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) Error_Handler();
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) Error_Handler();
+  HAL_TIM_MspPostInit(&htim2);
+}
+
+static void MX_TIM4_Init(void) // System Heartbeat Timer
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 99; // For 1MHz clock
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 999;   // Interrupt every 1000 * 1us = 1ms
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK) Error_Handler();
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK) Error_Handler();
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK) Error_Handler();
+}
+
+static void MX_USART6_UART_Init(void)
+{
+  huart6.Instance = USART6;
+  huart6.Init.BaudRate = 115200;
+  huart6.Init.WordLength = UART_WORDLENGTH_8B;
+  huart6.Init.StopBits = UART_STOPBITS_1;
+  huart6.Init.Parity = UART_PARITY_NONE;
+  huart6.Init.Mode = UART_MODE_TX_RX;
+  huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) Error_Handler();
+}
+
+static void MX_DMA_Init(void)
+{
+  __HAL_RCC_DMA2_CLK_ENABLE();
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+}
+
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  HAL_GPIO_WritePin(LED_ON_BOARD_GPIO_Port, LED_ON_BOARD_Pin, GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = PIR_Pin|DHT22_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = LED_ON_BOARD_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(LED_ON_BOARD_GPIO_Port, &GPIO_InitStruct);
+}
+
+/* --- CÁC HÀM HỖ TRỢ VÀ CALLBACK --- */
+
+/**
+  * @brief  Hàm này được tạo ra để khắc phục lỗi generate code của CubeMX.
+  */
+static void Manual_DMA_Link_Init(void)
+{
+  hdma_adc1.Instance = DMA2_Stream0;
+  hdma_adc1.Init.Channel = DMA_CHANNEL_0;
+  hdma_adc1.Init.Direction = DMA_PERIPH_TO_MEMORY;
+  hdma_adc1.Init.PeriphInc = DMA_PINC_DISABLE;
+  hdma_adc1.Init.MemInc = DMA_MINC_ENABLE;
+  hdma_adc1.Init.PeriphDataAlignment = DMA_PDATAALIGN_WORD;
+  hdma_adc1.Init.MemDataAlignment = DMA_MDATAALIGN_WORD;
+  hdma_adc1.Init.Mode = DMA_CIRCULAR;
+  hdma_adc1.Init.Priority = DMA_PRIORITY_HIGH;
+  hdma_adc1.Init.FIFOMode = DMA_FIFOMODE_DISABLE;
+  if (HAL_DMA_Init(&hdma_adc1) != HAL_OK) Error_Handler();
+  __HAL_LINKDMA(&hadc1, DMA_Handle, hdma_adc1);
+}
+
+/**
+  * @brief  Hàm gửi lệnh AT và chờ phản hồi (vẫn còn blocking).
+  * @note   Trong một hệ thống phức tạp hơn, hàm này nên được viết lại
+  * để không chặn (non-blocking). Nhưng với logic kết nối một lần
+  * thì có thể chấp nhận được.
+  */
+int send_at_command(const char* command, const char* expected_response, uint32_t timeout)
+{
+    memset(response_buffer, 0, sizeof(response_buffer));
+    response_index = 0;
+    HAL_UART_Transmit(&huart6, (uint8_t*)command, strlen(command), 1000);
+
+    uint32_t start_time = HAL_GetTick(); // Sử dụng HAL_GetTick() thay vì ms_ticks
+    while (HAL_GetTick() - start_time < timeout)
+    {
+        // Kiểm tra xem phản hồi mong đợi đã có trong buffer chưa
+        if (strstr(response_buffer, expected_response) != NULL)
+        {
+            return 1; // Success
+        }
+        // Thêm độ trễ nhỏ để giảm tải CPU và cho phép UART ISR chạy
+        HAL_Delay(10); // Đợi 10ms trước khi kiểm tra lại
+    }
+    // Nếu hết thời gian chờ mà không thấy phản hồi
+    // In ra buffer hiện tại để debug (tùy chọn)
+    // printf("Timeout waiting for '%s' in response to '%s'. Buffer: %s\n", expected_response, command, response_buffer);
+    return 0; // Fail
+}
+
+/**
+  * @brief  Callback được gọi mỗi khi một Timer kết thúc chu kỳ đếm.
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM4) // Kiểm tra có phải "nhịp tim" từ TIM4 không
+  {
+    ms_ticks++; // Tăng biến đếm mili giây
+  }
+}
+
+/**
+  * @brief  Callback được gọi mỗi khi nhận được 1 byte qua UART.
+  */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+  if (huart->Instance == USART6)
+  {
+    if (response_index < sizeof(response_buffer) - 1)
+    {
+      response_buffer[response_index++] = uart_rx_byte;
+    }
+    HAL_UART_Receive_IT(&huart6, &uart_rx_byte, 1); // Lắng nghe byte tiếp theo
+  }
+}
+
+void Error_Handler(void)
+{
+  __disable_irq();
+  while (1) {}
+}

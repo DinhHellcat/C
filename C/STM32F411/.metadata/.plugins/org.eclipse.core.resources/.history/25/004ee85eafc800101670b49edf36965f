@@ -1,0 +1,290 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Step 2: TCP Transparent Mode
+  * @version        : 1.2
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+#include "i2c_lcd.h"
+#include "dhtxx.h"
+#include "dwt.h"
+#include <stdio.h>
+#include <string.h>
+#include "ring_buffer.h"
+
+/* Private defines -----------------------------------------------------------*/
+// --- CẤU HÌNH WIFI & SERVER ---
+#define WIFI_SSID       "Herukyatto"      // <--- SỬA LẠI WIFI CỦA BẠN
+#define WIFI_PASSWORD   "1234567890"      // <--- SỬA LẠI PASS
+#define SERVER_IP       "192.168.1.5"     // <--- QUAN TRỌNG: IP MÁY CHẠY PYTHON (Check ipconfig/ifconfig)
+#define SERVER_PORT     5000
+
+#define SEND_INTERVAL   5000 // Gửi dữ liệu mỗi 5s
+
+/* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+TIM_HandleTypeDef htim4;
+UART_HandleTypeDef huart6;
+
+I2C_LCD_HandleTypeDef lcd;
+DHTxx_Drv_t dht22;
+
+volatile uint32_t ms_ticks = 0;
+RingBuffer wifi_rb;
+uint8_t rx_data_temp;
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_USART6_UART_Init(void);
+void Error_Handler(void);
+
+// Hàm hỗ trợ WiFi mới
+int WiFi_WaitResponse(char *expected, uint32_t timeout);
+void WiFi_Connect_TCP(void);
+
+/**
+  * @brief  The application entry point.
+  */
+int main(void)
+{
+  HAL_Init();
+  SystemClock_Config();
+  MX_GPIO_Init();
+  MX_I2C1_Init();
+  MX_TIM4_Init();
+  MX_USART6_UART_Init();
+  DwtInit();
+
+  // --- 1. Khởi tạo LCD & Buffer ---
+  lcd.hi2c = &hi2c1;
+  lcd.address = 0x4E;
+  lcd_init(&lcd);
+  lcd_clear(&lcd);
+  lcd_puts(&lcd, "System Booting");
+
+  RB_Init(&wifi_rb);
+  HAL_UART_Receive_IT(&huart6, &rx_data_temp, 1); // Bắt đầu hứng dữ liệu vào Buffer
+  HAL_TIM_Base_Start_IT(&htim4); // Bắt đầu đếm thời gian
+
+  // --- 2. Khởi tạo DHT22 ---
+  dht22.DataPort = DHT22_GPIO_Port;
+  dht22.DataPin = DHT22_Pin;
+  dht22.Type = DHT22;
+
+  // --- 3. KẾT NỐI WIFI & TCP SERVER ---
+  // Quá trình này sẽ làm một lần khi khởi động
+  WiFi_Connect_TCP();
+
+  uint32_t last_send_time = 0;
+
+  /* --- 4. VÒNG LẶP CHÍNH --- */
+  while (1)
+  {
+      // --- NHIỆM VỤ A: Gửi dữ liệu định kỳ (Uplink) ---
+      if (ms_ticks - last_send_time >= SEND_INTERVAL)
+      {
+          last_send_time = ms_ticks;
+
+          // Đọc cảm biến
+          DHT_GetData(&dht22);
+
+          // Tạo chuỗi JSON
+          char json_msg[128];
+          // Lưu ý: \n ở cuối là rất quan trọng để Server biết hết câu
+          sprintf(json_msg, "{\"id\":\"room1\",\"temp\":%.1f,\"humi\":%.1f}\n",
+                  dht22.Temperature, dht22.Humidity);
+
+          // Gửi thẳng qua UART (Vì đã ở Transparent Mode, nó sẽ bay thẳng sang Server)
+          HAL_UART_Transmit(&huart6, (uint8_t*)json_msg, strlen(json_msg), 1000);
+
+          // Cập nhật LCD báo đã gửi
+          lcd_gotoxy(&lcd, 0, 0);
+          lcd_puts(&lcd, "Sent Data...    ");
+      }
+
+      // --- NHIỆM VỤ B: Lắng nghe Server (Downlink) ---
+      // Server gửi gì về, ta nhận ngay lập tức qua Ring Buffer
+      if (!RB_IsEmpty(&wifi_rb))
+      {
+          uint8_t data;
+          static int col = 0;
+
+          // Xử lý hiển thị (sau này sẽ thay bằng xử lý JSON)
+          if (col == 0) {
+              lcd_gotoxy(&lcd, 0, 1);
+              lcd_puts(&lcd, "Rx:             "); // Xóa dòng 2
+              lcd_gotoxy(&lcd, 0, 1);
+              lcd_puts(&lcd, "Rx: ");
+              col = 4;
+          }
+
+          while (RB_Get(&wifi_rb, &data))
+          {
+              if (data >= 32 && data <= 126) // Chỉ in ký tự đọc được
+              {
+                  char s[2] = {data, 0};
+                  lcd_puts(&lcd, s);
+                  col++;
+                  if (col > 15) col = 0;
+              }
+          }
+      }
+  }
+}
+
+/* ============================================================ */
+/* CÁC HÀM HỖ TRỢ DRIVER WIFI (TCP)                    */
+/* ============================================================ */
+
+// Hàm chờ phản hồi từ Buffer (thay thế HAL_UART_Receive blocking cũ)
+// Hàm này lấy dữ liệu từ RingBuffer ra để so sánh
+int WiFi_WaitResponse(char *expected, uint32_t timeout)
+{
+    uint32_t start = HAL_GetTick();
+    char received[256];
+    uint16_t idx = 0;
+    memset(received, 0, 256);
+
+    while (HAL_GetTick() - start < timeout)
+    {
+        uint8_t c;
+        while (RB_Get(&wifi_rb, &c)) // Hút dữ liệu từ Buffer
+        {
+            if (idx < 255) received[idx++] = c;
+
+            // Kiểm tra xem chuỗi kỳ vọng có trong dữ liệu vừa nhận không
+            if (strstr(received, expected) != NULL) return 1; // Tìm thấy!
+        }
+        HAL_Delay(10); // Nghỉ chút để CPU không chạy 100%
+    }
+    return 0; // Timeout
+}
+
+void WiFi_Connect_TCP(void)
+{
+    lcd_clear(&lcd);
+    lcd_puts(&lcd, "WiFi Setup...");
+    HAL_Delay(1000);
+
+    // 1. Reset Module
+    lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "Resetting...    ");
+    HAL_UART_Transmit(&huart6, (uint8_t*)"AT+RST\r\n", 8, 100);
+    HAL_Delay(3000); // Đợi module khởi động lại
+    RB_Flush(&wifi_rb); // Xóa sạch rác trong buffer
+
+    // 2. Chế độ Station
+    // Lưu ý: Module AI-WB-01S đôi khi dùng AT+CWMODE thay vì AT+WMODE.
+    // Tôi dùng AT+CWMODE vì nó chuẩn ESP8266 hơn, nếu không chạy hãy đổi lại AT+WMODE=1,1
+    HAL_UART_Transmit(&huart6, (uint8_t*)"AT+CWMODE=1\r\n", 13, 100);
+    HAL_Delay(500);
+    RB_Flush(&wifi_rb); // Đơn giản hóa, không cần check OK đoạn này
+
+    // 3. Kết nối WiFi
+    lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "Connecting AP...");
+    char cmd[100];
+    sprintf(cmd, "AT+CWJAP=\"%s\",\"%s\"\r\n", WIFI_SSID, WIFI_PASSWORD);
+    HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 1000);
+
+    // Chờ kết nối (có thể lâu, 10-15s)
+    if (WiFi_WaitResponse("WIFI GOT IP", 15000)) {
+        lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "WiFi Connected! ");
+    } else {
+        lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "WiFi Fail!      ");
+        // Nếu fail, vẫn cứ thử chạy tiếp hoặc while(1) tùy bạn.
+        // Ở đây ta cứ đi tiếp để debug.
+    }
+    HAL_Delay(1000);
+
+    // 4. Kết nối TCP Server
+    lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "Link Server...  ");
+    sprintf(cmd, "AT+CIPSTART=\"TCP\",\"%s\",%d\r\n", SERVER_IP, SERVER_PORT);
+    HAL_UART_Transmit(&huart6, (uint8_t*)cmd, strlen(cmd), 1000);
+
+    if (WiFi_WaitResponse("CONNECT", 5000) || WiFi_WaitResponse("OK", 5000)) {
+        lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "Server Linked!  ");
+    } else {
+        lcd_gotoxy(&lcd, 0, 1); lcd_puts(&lcd, "Server Fail!    ");
+        HAL_Delay(2000);
+    }
+    HAL_Delay(1000);
+
+    // 5. Vào chế độ Transparent (Truyền trong suốt)
+    // Để khi gửi UART không cần lệnh AT+CIPSEND nữa
+    HAL_UART_Transmit(&huart6, (uint8_t*)"AT+CIPMODE=1\r\n", 14, 100);
+    HAL_Delay(500);
+    HAL_UART_Transmit(&huart6, (uint8_t*)"AT+CIPSEND\r\n", 12, 100);
+
+    // Chờ dấu nhắc '>'
+    if (WiFi_WaitResponse(">", 2000)) {
+        lcd_clear(&lcd);
+        lcd_puts(&lcd, "TCP Transparent");
+        lcd_gotoxy(&lcd, 0, 1);
+        lcd_puts(&lcd, "Mode Active!");
+    }
+    HAL_Delay(2000);
+    lcd_clear(&lcd);
+}
+
+/* --- (GIỮ NGUYÊN CÁC HÀM INIT MX_... và SystemClock Ở DƯỚI) --- */
+/* Copy lại phần MX_... từ code cũ nếu bị thiếu, nhưng tôi nghĩ bạn đã có đủ */
+void SystemClock_Config(void) { /* ... Giữ nguyên ... */
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
+  RCC_OscInitStruct.PLL.PLLM = 8;
+  RCC_OscInitStruct.PLL.PLLN = 100;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK|RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_3) != HAL_OK) Error_Handler();
+}
+static void MX_I2C1_Init(void) {
+  hi2c1.Instance = I2C1; hi2c1.Init.ClockSpeed = 100000; hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2; hi2c1.Init.OwnAddress1 = 0; hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT; hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE; hi2c1.Init.OwnAddress2 = 0; hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE; hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
+}
+static void MX_TIM4_Init(void) {
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0}; TIM_MasterConfigTypeDef sMasterConfig = {0};
+  htim4.Instance = TIM4; htim4.Init.Prescaler = 99; htim4.Init.CounterMode = TIM_COUNTERMODE_UP; htim4.Init.Period = 999; htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1; htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK) Error_Handler();
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL; if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK) Error_Handler();
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET; sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK) Error_Handler();
+}
+static void MX_USART6_UART_Init(void) {
+  huart6.Instance = USART6; huart6.Init.BaudRate = 115200; huart6.Init.WordLength = UART_WORDLENGTH_8B; huart6.Init.StopBits = UART_STOPBITS_1; huart6.Init.Parity = UART_PARITY_NONE; huart6.Init.Mode = UART_MODE_TX_RX; huart6.Init.HwFlowCtl = UART_HWCONTROL_NONE; huart6.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart6) != HAL_OK) Error_Handler();
+}
+static void MX_GPIO_Init(void) {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  __HAL_RCC_GPIOH_CLK_ENABLE(); __HAL_RCC_GPIOA_CLK_ENABLE(); __HAL_RCC_GPIOC_CLK_ENABLE(); __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitStruct.Pin = DHT22_Pin; GPIO_InitStruct.Mode = GPIO_MODE_INPUT; GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+}
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim) {
+  if (htim->Instance == TIM4) ms_ticks++;
+}
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+  if (huart->Instance == USART6) {
+    RB_Put(&wifi_rb, rx_data_temp);
+    HAL_UART_Receive_IT(&huart6, &rx_data_temp, 1);
+  }
+}
